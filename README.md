@@ -18,11 +18,10 @@ Untuk DiscoTope-3.0 dan seluruh pipeline AI (RFdiffusion/ProteinMPNN/RF2) di Tab
 
 ## Menyiapkan environment eksternal
 
-Skrip `scripts/setup_environment.ps1` **tidak dijalankan otomatis**. Baca isinya, lalu jalankan sendiri saat siap:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup_environment.ps1
-```
+Skrip `
+chmod +x scripts/setup_environment.sh
+./scripts/setup_environment.sh` 
+**tidak dijalankan otomatis**. Baca isinya, lalu jalankan sendiri saat siap:
 
 Skrip ini menginstal Miniconda, membuat conda env `nanobody-tools` dan `discotope`, meng-clone dan memasang DiscoTope-3.0. **RFantibody** (RFdiffusion/ProteinMPNN/RF2) memakai `uv` dan skrip bash yang ditujukan untuk Linux+CUDA — tidak didukung native di Windows, jadi dijalankan lewat **WSL2** (default) atau **Docker Desktop dengan GPU passthrough**; skrip ini mencetak perintah persis yang perlu dijalankan di dalam WSL.
 
