@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Runtime-generated data (recreated automatically on app start)
+cache/
+work/
+output/
+projects/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Electron build output
+dist/
+out/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local Claude Code session config (machine-specific, not project source)
+.claude/
+
+# Local env overrides (never commit machine-specific paths/secrets)
+.env
+.env.local

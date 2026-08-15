@@ -1,0 +1,16 @@
+# Base env for DiscoTope-3.0 (https://github.com/Magnushhoie/DiscoTope-3.0).
+# After this env is created, the setup script installs DiscoTope-3.0 itself
+# from its own requirements.txt (its exact pinned versions), since those are
+# the source of truth, not this file.
+name: discotope
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - pytorch-cuda=12.1
+  - numpy
+  - pandas

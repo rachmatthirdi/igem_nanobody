@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data: https://files.rcsb.org https://data.rcsb.org https://www.ebi.ac.uk https://rest.uniprot.org; script-src 'self' 'unsafe-inline'; connect-src 'self' https://files.rcsb.org https://data.rcsb.org https://www.ebi.ac.uk https://rest.uniprot.org;" />
+<title>Nanobody Designer</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ==================== HEADER ==================== -->
+  <header id="header">
+    <div class="brand">
+      <span class="brand-icon">🔬</span>
+      <span class="brand-title">NANOBODY DESIGNER</span>
+    </div>
+    <div class="header-right">
+      <span id="gpu-badge" class="badge badge-muted">🔴 GPU: memeriksa...</span>
+      <button id="btn-settings" class="icon-btn" title="Pengaturan">⚙️</button>
+      <button id="btn-save-project" class="icon-btn" title="Simpan Proyek">💾</button>
+      <button id="btn-load-project" class="icon-btn" title="Muat Proyek">📂</button>
+    </div>
+  </header>
+
+  <div id="body-layout">
+
+    <!-- ==================== SIDEBAR: SYSTEM MONITOR ==================== -->
+    <aside id="sidebar">
+      <h3>System Monitor</h3>
+      <div class="monitor-row">
+        <span class="monitor-label">GPU</span>
+        <span id="mon-gpu" class="monitor-value">-</span>
+      </div>
+      <div class="monitor-row">
+        <span class="monitor-label">VRAM</span>
+        <span id="mon-vram" class="monitor-value">-</span>
+      </div>
+      <div class="monitor-row">
+        <span class="monitor-label">Conda tools env</span>
+        <span id="mon-tools-env" class="monitor-value">-</span>
+      </div>
+      <div class="monitor-row">
+        <span class="monitor-label">DiscoTope env</span>
+        <span id="mon-discotope-env" class="monitor-value">-</span>
+      </div>
+      <div class="monitor-row">
+        <span class="monitor-label">RFantibody</span>
+        <span id="mon-rfab" class="monitor-value">-</span>
+      </div>
+      <div class="monitor-row">
+        <span class="monitor-label">Exec mode</span>
+        <span id="mon-execmode" class="monitor-value">-</span>
+      </div>
+      <hr />
+      <h3>Alur Pipeline</h3>
+      <ol class="pipeline-steps">
+        <li data-step="target">1. Target</li>
+        <li data-step="design">2. Desain</li>
+        <li data-step="screening">3. Screening</li>
+        <li data-step="construct">4. Konstruk</li>
+      </ol>
+    </aside>
+
+    <!-- ==================== MAIN CONTENT ==================== -->
+    <main id="main-content">
+      <nav id="tabs">
+        <button class="tab-btn active" data-tab="target">🎯 Target</button>
+        <button class="tab-btn" data-tab="design">🧬 Desain</button>
+        <button class="tab-btn" data-tab="screening">🧪 Screening</button>
+        <button class="tab-btn" data-tab="construct">🧫 Konstruk</button>
+      </nav>
+
+      <div id="tab-panels">
+
+        <!-- ============ TAB 1: TARGET ============ -->
+        <section id="tab-target" class="tab-panel active">
+          <div class="card">
+            <h2>Fase 1 — Input PDB ID</h2>
+            <div class="pdb-input-row">
+              <input id="pdb-id-input" type="text" maxlength="4" placeholder="mis. 5M13" />
+              <button id="btn-analyze" class="btn btn-primary">Analisis</button>
+            </div>
+            <div class="quick-examples">
+              <span>Contoh cepat:</span>
+              <button class="chip example-chip" data-pdb="5M13">5M13</button>
+              <button class="chip example-chip" data-pdb="4KRN">4KRN</button>
+              <button class="chip example-chip" data-pdb="1ZVH">1ZVH</button>
+              <button class="chip example-chip" data-pdb="1I3V">1I3V</button>
+              <button class="chip example-chip" data-pdb="4NC2">4NC2</button>
+            </div>
+          </div>
+
+          <div class="card" id="analysis-progress-card" style="display:none">
+            <h2>Fase 2 — Analisis Target</h2>
+            <div class="progress-item">
+              <div class="progress-label"><span>Download PDB</span><span id="pg-download-pdb-pct">0%</span></div>
+              <div class="progress-bar"><div id="pg-download-pdb" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-download-pdb-status"></div>
+            </div>
+            <div class="progress-item">
+              <div class="progress-label"><span>InterPro (Domain Architecture)</span><span id="pg-interpro-pct">0%</span></div>
+              <div class="progress-bar"><div id="pg-interpro" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-interpro-status"></div>
+            </div>
+            <div class="progress-item">
+              <div class="progress-label"><span>FreeSASA</span><span id="pg-freesasa-pct">0%</span></div>
+              <div class="progress-bar"><div id="pg-freesasa" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-freesasa-status"></div>
+            </div>
+            <div class="progress-item">
+              <div class="progress-label"><span>DiscoTope-3.0</span><span id="pg-discotope-pct">0%</span></div>
+              <div class="progress-bar"><div id="pg-discotope" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-discotope-status"></div>
+            </div>
+          </div>
+
+          <div class="card" id="hotspot-map-card" style="display:none">
+            <h2>Fase 3 — Hotspot &amp; Predicted-Epitope Map</h2>
+            <h3 id="structure-title" class="structure-title"></h3>
+
+            <div class="viewer-tracks-layout">
+              <div id="viewer3d-container" class="viewer3d-container"></div>
+
+              <div class="tracks-container">
+                <div class="track-block">
+                  <div class="track-title">Domain Architecture (InterPro)</div>
+                  <div id="track-domains" class="track track-domains"></div>
+                </div>
+                <div class="track-block">
+                  <div class="track-title">SASA (FreeSASA)</div>
+                  <div id="track-sasa" class="track track-heatmap"></div>
+                </div>
+                <div class="track-block">
+                  <div class="track-title">DiscoTope-3.0 (Prediksi Epitop)</div>
+                  <div id="track-discotope" class="track track-heatmap"></div>
+                </div>
+                <div id="track-tooltip" class="track-tooltip hidden"></div>
+              </div>
+            </div>
+
+            <div class="hotspot-controls">
+              <button id="btn-select-epitope" class="btn btn-secondary">Pilih Semua Epitop</button>
+              <button id="btn-select-top20" class="btn btn-secondary">Top 20 DiscoTope</button>
+              <button id="btn-clear-hotspots" class="btn btn-ghost">Bersihkan</button>
+              <span id="hotspot-count" class="hotspot-count">0 residu dipilih</span>
+            </div>
+            <div id="hotspot-chips" class="hotspot-chips"></div>
+
+            <table class="data-table" id="domain-table">
+              <thead><tr><th>Accession</th><th>Nama</th><th>Tipe</th><th>Posisi</th></tr></thead>
+              <tbody></tbody>
+            </table>
+
+            <div class="tab-footer-actions">
+              <button id="btn-goto-design" class="btn btn-primary">Lanjut ke Desain →</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ TAB 2: DESAIN ============ -->
+        <section id="tab-design" class="tab-panel">
+          <div class="card">
+            <h2>Fase 4 — Scaffold Selection</h2>
+            <div class="form-row">
+              <label>Scaffold</label>
+              <select id="scaffold-select">
+                <option value="3DWT">NbBcII10 (3DWT) — RFantibody bundled framework</option>
+              </select>
+            </div>
+            <div class="scaffold-sequence-block">
+              <div class="section-label">🧬 Sekuens Scaffold (Chain H)</div>
+              <div id="scaffold-sequence" class="sequence-view">Belum dimuat. Pastikan path RFantibody diatur di Settings.</div>
+            </div>
+            <table class="data-table" id="cdr-table">
+              <thead><tr><th>CDR</th><th>Rentang Posisi</th><th>Panjang Redesign</th></tr></thead>
+              <tbody>
+                <tr><td>H1</td><td id="cdr-h1-range">-</td><td><input type="text" id="cdr-h1-len" value="7" class="cdr-len-input" /></td></tr>
+                <tr><td>H2</td><td id="cdr-h2-range">-</td><td><input type="text" id="cdr-h2-len" value="6" class="cdr-len-input" /></td></tr>
+                <tr><td>H3</td><td id="cdr-h3-range">-</td><td><input type="text" id="cdr-h3-len" value="5-13" class="cdr-len-input" /></td></tr>
+              </tbody>
+            </table>
+
+            <div class="slider-row">
+              <label>Backbone Number: <span id="val-backbone-number">20</span></label>
+              <input type="range" id="slider-backbone-number" min="1" max="200" value="20" />
+            </div>
+            <div class="slider-row">
+              <label>MPNN Designs/backbone: <span id="val-mpnn-designs">4</span></label>
+              <input type="range" id="slider-mpnn-designs" min="1" max="20" value="4" />
+            </div>
+            <div class="slider-row">
+              <label>MPNN Temperature: <span id="val-mpnn-temp">0.20</span></label>
+              <input type="range" id="slider-mpnn-temp" min="0.05" max="1" step="0.05" value="0.2" />
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Fase 5 — AI Design Pipeline (RFantibody)</h2>
+            <div class="pipeline-stage">
+              <div class="pipeline-stage-header">
+                <span>🌀 RFdiffusion</span>
+                <span id="badge-rfdiffusion" class="badge badge-muted">Menunggu</span>
+              </div>
+              <div class="progress-bar"><div id="pg-rfdiffusion" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-rfdiffusion-status"></div>
+            </div>
+            <div class="pipeline-stage">
+              <div class="pipeline-stage-header">
+                <span>🧬 ProteinMPNN</span>
+                <span id="badge-proteinmpnn" class="badge badge-muted">Menunggu</span>
+              </div>
+              <div class="progress-bar"><div id="pg-proteinmpnn" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-proteinmpnn-status"></div>
+            </div>
+            <div class="pipeline-stage">
+              <div class="pipeline-stage-header">
+                <span>🔬 RF2</span>
+                <span id="badge-rf2" class="badge badge-muted">Menunggu</span>
+              </div>
+              <div class="progress-bar"><div id="pg-rf2" class="progress-fill"></div></div>
+              <div class="progress-status" id="pg-rf2-status"></div>
+            </div>
+            <div class="gpu-warning" id="gpu-warning-banner" style="display:none">
+              ⚠ GPU NVIDIA tidak terdeteksi. Tahap RFdiffusion/ProteinMPNN/RF2 kemungkinan akan gagal.
+            </div>
+            <div class="tab-footer-actions">
+              <button id="btn-run-pipeline" class="btn btn-primary">▶ Jalankan AI Design Pipeline</button>
+              <button id="btn-goto-screening" class="btn btn-secondary" disabled>Lanjut ke Screening →</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ TAB 3: SCREENING ============ -->
+        <section id="tab-screening" class="tab-panel">
+          <div class="card">
+            <h2>Fase 6a — Filter &amp; Composite Score</h2>
+            <div class="filter-grid">
+              <div class="filter-item">
+                <label>pLDDT ≥ <span id="val-f-plddt">70</span></label>
+                <input type="range" id="f-plddt" min="0" max="100" value="70" />
+              </div>
+              <div class="filter-item">
+                <label>PAE ≤ <span id="val-f-pae">10</span></label>
+                <input type="range" id="f-pae" min="0" max="30" value="10" />
+              </div>
+              <div class="filter-item">
+                <label>CDR RMSD ≤ <span id="val-f-cdrrmsd">2.0</span> Å</label>
+                <input type="range" id="f-cdrrmsd" min="0" max="10" step="0.1" value="2.0" />
+              </div>
+              <div class="filter-item">
+                <label>H3 RMSD ≤ <span id="val-f-h3rmsd">3.0</span> Å</label>
+                <input type="range" id="f-h3rmsd" min="0" max="10" step="0.1" value="3.0" />
+              </div>
+              <div class="filter-item">
+                <label>ΔG ≤ <span id="val-f-dg">-8</span> kcal/mol</label>
+                <input type="range" id="f-dg" min="-25" max="0" step="0.5" value="-8" />
+              </div>
+              <div class="filter-item">
+                <label>Organisme (CAI)</label>
+                <select id="f-organism">
+                  <option value="Escherichia coli general" selected>E. coli K-12 (general)</option>
+                  <option value="Homo sapiens">Homo sapiens</option>
+                  <option value="Pichia pastoris">Pichia pastoris</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="tab-footer-actions">
+              <button id="btn-import-metrics" class="btn btn-ghost">📂 Pilih File Metrics... (Import Manual)</button>
+              <span id="import-status" class="import-status"></span>
+            </div>
+
+            <table class="data-table" id="candidates-table">
+              <thead>
+                <tr>
+                  <th></th><th>ID</th><th>pLDDT</th><th>PAE</th><th>CDR RMSD</th><th>H3 RMSD</th><th>ΔG</th><th>Composite</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <h2>Fase 6c — Codon Optimization</h2>
+            <div class="form-row">
+              <label>Kandidat terpilih</label>
+              <span id="selected-candidates-summary">Belum ada kandidat dipilih.</span>
+            </div>
+            <button id="btn-codon-optimize" class="btn btn-primary" disabled>Optimalkan Kodon untuk Kandidat Terpilih</button>
+            <div id="codon-results" class="codon-results"></div>
+          </div>
+        </section>
+
+        <!-- ============ TAB 4: KONSTRUK ============ -->
+        <section id="tab-construct" class="tab-panel">
+          <div class="card">
+            <h2>Fase 7 — Anchor Protein</h2>
+            <div class="anchor-cards">
+              <button class="anchor-card" data-anchor="intimin">
+                <div class="anchor-card-title">Intimin (EaeA)</div>
+                <div class="anchor-card-sub">UniProt P43261</div>
+              </button>
+              <button class="anchor-card" data-anchor="lpp-ompa">
+                <div class="anchor-card-title">Lpp-OmpA</div>
+                <div class="anchor-card-sub">UniProt P69776 + P0A910</div>
+              </button>
+            </div>
+            <div id="anchor-sequence-card" class="anchor-sequence-card" style="display:none">
+              <div class="section-label">Sekuens Anchor</div>
+              <div id="anchor-sequence-meta" class="anchor-meta"></div>
+              <div id="anchor-sequence-view" class="sequence-view"></div>
+            </div>
+
+            <div class="form-row">
+              <label>Kandidat Nanobody (dengan DNA)</label>
+              <select id="construct-candidate-select"></select>
+            </div>
+            <button id="btn-build-anchor-construct" class="btn btn-primary" disabled>Bangun Konstruk Anchor</button>
+            <div id="anchor-construct-preview" class="sequence-view"></div>
+          </div>
+
+          <div class="card">
+            <h2>Fase 8 — Plasmid Constructor</h2>
+            <div class="form-row">
+              <label>Vektor</label>
+              <select id="vector-select">
+                <option value="pET-28a(+)" selected>pET-28a(+)</option>
+                <option value="pET-22b(+)">pET-22b(+)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label><input type="checkbox" id="chk-pelb" /> Sertakan PelB signal peptide tambahan</label>
+            </div>
+
+            <div class="insert-components" id="insert-components">
+              <span class="insert-chip">NdeI</span>
+              <span class="insert-chip insert-chip-pelb" style="display:none">PelB</span>
+              <span class="insert-chip">Anchor</span>
+              <span class="insert-chip">Linker</span>
+              <span class="insert-chip">Nanobody</span>
+              <span class="insert-chip">His-Tag</span>
+              <span class="insert-chip">Stop</span>
+              <span class="insert-chip">XhoI</span>
+            </div>
+
+            <button id="btn-build-plasmid" class="btn btn-primary" disabled>Rakit Insert &amp; Export FASTA</button>
+
+            <div id="plasmid-preview" class="plasmid-preview" style="display:none">
+              <div class="section-label">Preview FASTA</div>
+              <pre id="plasmid-fasta-preview" class="fasta-preview"></pre>
+              <div id="plasmid-meta" class="anchor-meta"></div>
+              <button id="btn-open-output" class="btn btn-secondary">📂 Buka Folder Output</button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== LIVE CONSOLE FOOTER ==================== -->
+  <footer id="console-footer" class="collapsed">
+    <div id="console-header">
+      <span>🖥 Live Console</span>
+      <div class="console-header-actions">
+        <button id="btn-console-export" class="icon-btn-small" title="Export">⬇</button>
+        <button id="btn-console-clear" class="icon-btn-small" title="Clear">🗑</button>
+        <button id="btn-console-toggle" class="icon-btn-small" title="Toggle">▲</button>
+      </div>
+    </div>
+    <div id="console-body"></div>
+  </footer>
+
+  <!-- ==================== SETTINGS MODAL ==================== -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>⚙️ Pengaturan</h2>
+      <div class="form-row"><label>Conda executable</label><input type="text" id="set-condaExe" /></div>
+      <div class="form-row"><label>Conda env (tools: FreeSASA/CodonTransformer/PRODIGY)</label><input type="text" id="set-toolsEnv" /></div>
+      <div class="form-row"><label>Conda env (DiscoTope-3.0)</label><input type="text" id="set-discotopeEnv" /></div>
+      <div class="form-row"><label>Path repository DiscoTope-3.0</label><input type="text" id="set-discotopeRepoDir" /><button class="btn btn-ghost" id="pick-discotopeRepoDir">Pilih...</button></div>
+      <div class="form-row"><label>Path instalasi RFantibody</label><input type="text" id="set-rfantibodyDir" /><button class="btn btn-ghost" id="pick-rfantibodyDir">Pilih...</button></div>
+      <div class="form-row">
+        <label>Mode eksekusi RFantibody</label>
+        <select id="set-rfantibodyExecMode">
+          <option value="wsl">WSL2 (Windows + NVIDIA via WSL)</option>
+          <option value="docker">Docker Desktop (GPU passthrough)</option>
+          <option value="native">Native (Linux host)</option>
+        </select>
+      </div>
+      <div class="form-row"><label>Distro WSL</label><input type="text" id="set-wslDistro" /></div>
+      <div class="form-row"><label>Docker image</label><input type="text" id="set-dockerImage" /></div>
+      <div class="modal-actions">
+        <button id="btn-settings-save" class="btn btn-primary">Simpan</button>
+        <button id="btn-settings-close" class="btn btn-ghost">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== PROJECTS MODAL ==================== -->
+  <div id="projects-modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>📂 Muat Proyek</h2>
+      <div id="projects-list" class="projects-list"></div>
+      <div class="modal-actions">
+        <button id="btn-projects-close" class="btn btn-ghost">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script defer src="js/state.js"></script>
+<script defer src="js/console-panel.js"></script>
+<script defer type="module" src="js/viewer3d.js"></script>
+<script defer src="js/tab-target.js"></script>
+<script defer src="js/tab-design.js"></script>
+<script defer src="js/tab-screening.js"></script>
+<script defer src="js/tab-construct.js"></script>
+<script defer src="js/app.js"></script>
+</body>
+</html>

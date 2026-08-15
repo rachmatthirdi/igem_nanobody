@@ -1,0 +1,15 @@
+name: nanobody-tools
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pip:
+      - freesasa
+      - requests
+      - biopython
+      - prodigy-prot
+      - torch
+      - transformers
+      - CodonTransformer
