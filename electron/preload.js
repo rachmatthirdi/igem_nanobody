@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   runFreesasa: invoke('run-freesasa'),
   runDiscotope: invoke('run-discotope'),
 
-  // Tab 2 - Desain
+  // Tab 2 - Design
   getScaffoldSequence: invoke('get-scaffold-sequence'),
   runRfdiffusion: invoke('run-rfdiffusion'),
   runProteinMpnn: invoke('run-proteinmpnn'),
@@ -25,13 +25,14 @@ contextBridge.exposeInMainWorld('api', {
   codonOptimize: invoke('codon-optimize'),
   calculateCai: invoke('calculate-cai'),
 
-  // Tab 4 - Konstruk
+  // Tab 4 - Construct
   fetchAnchor: invoke('fetch-anchor'),
   buildAnchorConstruct: invoke('build-anchor-construct'),
   buildPlasmid: invoke('build-plasmid'),
   openOutputFolder: invoke('open-output-folder'),
 
-  // Lintas-tab
+  // Cross-tab
+  getPlatformInfo: invoke('get-platform-info'),
   checkGpu: invoke('check-gpu'),
   saveProject: invoke('save-project'),
   loadProject: invoke('load-project'),

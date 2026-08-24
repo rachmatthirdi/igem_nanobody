@@ -2,6 +2,13 @@
   let viewer3d = null;
   let residueIndex = []; // ordered list of residue numbers (chain A) used to lay out tracks
   let resMin = 0, resMax = 0;
+  let resNumToAA = new Map(); // chain A resNum -> one-letter amino acid code, for labels like "L102"
+
+  const AA_3TO1 = {
+    ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E',
+    GLY: 'G', HIS: 'H', ILE: 'I', LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F',
+    PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V', MSE: 'M',
+  };
 
   function $(id) { return document.getElementById(id); }
 
@@ -19,7 +26,30 @@
     return [...seen].sort((a, b) => a - b);
   }
 
+  // Chain A resNum -> one-letter amino acid code, so residues can be shown
+  // as e.g. "L102" instead of a bare position number.
+  function buildResNumToAA(pdbText) {
+    const map = new Map();
+    for (const line of pdbText.split(/\r?\n/)) {
+      if (!line.startsWith('ATOM')) continue;
+      if (line.charAt(21) !== 'A') continue;
+      if (line.slice(12, 16).trim() !== 'CA') continue;
+      const resNum = parseInt(line.slice(22, 26), 10);
+      const resName = line.slice(17, 20).trim();
+      map.set(resNum, AA_3TO1[resName] || 'X');
+    }
+    return map;
+  }
+
+  // Human-readable residue label, e.g. "L102"; falls back to the bare
+  // number if the amino acid identity isn't known yet.
+  function resLabel(resNum) {
+    const aa = resNumToAA.get(resNum);
+    return aa ? `${aa}${resNum}` : `${resNum}`;
+  }
+
   function initViewerWhenReady() {
+    if (viewer3d) return;
     const create = () => {
       viewer3d = new window.Viewer3D($('viewer3d-container'));
       viewer3d.onResidueClick((chain, resNum) => {
@@ -31,7 +61,7 @@
     else window.addEventListener('viewer3d-ready', create, { once: true });
   }
 
-  // ---------------- Fase 1: input ----------------
+  // ---------------- Phase 1: input ----------------
   function wireInput() {
     document.querySelectorAll('.example-chip').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -47,7 +77,7 @@
   async function runAnalysis() {
     const pdbId = $('pdb-id-input').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(pdbId)) {
-      window.ConsolePanel.log('error', 'PDB ID harus 4 karakter alfanumerik.', 'target');
+      window.ConsolePanel.log('error', 'PDB ID must be 4 alphanumeric characters.', 'target');
       return;
     }
     $('analysis-progress-card').style.display = '';
@@ -59,7 +89,7 @@
     try {
       dl = await window.api.fetchPdb(pdbId);
     } catch (e) {
-      window.ConsolePanel.log('error', `Gagal mengunduh ${pdbId}: ${e.message}`, 'target');
+      window.ConsolePanel.log('error', `Failed to download ${pdbId}: ${e.message}`, 'target');
       return;
     }
     window.AppState.pdbPath = dl.pdbPath;
@@ -77,16 +107,16 @@
     window.AppState.discotopeResidues = disco.status === 'fulfilled' ? disco.value.residues : [];
 
     if (disco.status === 'rejected') {
-      window.ConsolePanel.log('warn', `DiscoTope-3.0 tidak berjalan: ${disco.reason.message}`, 'target');
+      window.ConsolePanel.log('warn', `DiscoTope-3.0 did not run: ${disco.reason.message}`, 'target');
     }
     if (sasa.status === 'rejected') {
-      window.ConsolePanel.log('warn', `FreeSASA tidak berjalan: ${sasa.reason.message}`, 'target');
+      window.ConsolePanel.log('warn', `FreeSASA did not run: ${sasa.reason.message}`, 'target');
     }
 
     await renderHotspotMap();
   }
 
-  // ---------------- Fase 3: hotspot map ----------------
+  // ---------------- Phase 3: hotspot map ----------------
   async function renderHotspotMap() {
     $('hotspot-map-card').style.display = '';
     $('structure-title').textContent = window.AppState.structureTitle || '';
@@ -95,9 +125,10 @@
     initViewerWhenReady();
     try {
       fullPdbText = await window.api.readPdbFile(window.AppState.pdbPath);
+      resNumToAA = buildResNumToAA(fullPdbText);
       if (viewer3d) setTimeout(() => viewer3d.loadPdb(fullPdbText), 50);
     } catch (e) {
-      window.ConsolePanel.log('warn', `Gagal memuat struktur 3D: ${e.message}`, 'target');
+      window.ConsolePanel.log('warn', `Failed to load 3D structure: ${e.message}`, 'target');
     }
 
     // residue index derived from SASA (chain A canonical numbering), falling
@@ -176,7 +207,7 @@
     });
 
     if (!segments.length) {
-      el.innerHTML = '<div style="padding:6px;color:var(--text-dim);font-size:11px">Tidak ada domain InterPro ditemukan.</div>';
+      el.innerHTML = '<div style="padding:6px;color:var(--text-dim);font-size:11px">No InterPro domains found.</div>';
     }
   }
 
@@ -221,8 +252,8 @@
       cell.style.left = `${resToPct(resNum)}%`;
       cell.style.width = `${w}%`;
       cell.style.background = colorScaleBlue(rsa);
-      cell.addEventListener('mouseenter', (e) => showTooltip(e, `Res ${resNum}${r ? `<br>SASA: ${r.sasa?.toFixed(1)} Å²<br>RSA: ${(r.rsa ?? 0).toFixed(2)}` : '<br>tidak ada data'}`));
-      cell.addEventListener('mousemove', (e) => showTooltip(e, `Res ${resNum}${r ? `<br>SASA: ${r.sasa?.toFixed(1)} Å²<br>RSA: ${(r.rsa ?? 0).toFixed(2)}` : '<br>tidak ada data'}`));
+      cell.addEventListener('mouseenter', (e) => showTooltip(e, `Res ${resLabel(resNum)}${r ? `<br>SASA: ${r.sasa?.toFixed(1)} Å²<br>RSA: ${(r.rsa ?? 0).toFixed(2)}` : '<br>no data'}`));
+      cell.addEventListener('mousemove', (e) => showTooltip(e, `Res ${resLabel(resNum)}${r ? `<br>SASA: ${r.sasa?.toFixed(1)} Å²<br>RSA: ${(r.rsa ?? 0).toFixed(2)}` : '<br>no data'}`));
       cell.addEventListener('mouseleave', hideTooltip);
       cell.addEventListener('click', () => toggleHotspot(resNum));
       el.appendChild(cell);
@@ -244,8 +275,8 @@
       cell.style.width = `${w}%`;
       cell.style.background = colorScaleOrangeRed(score);
       if (r?.predictedEpitope) cell.style.boxShadow = 'inset 0 0 0 1px #fff';
-      cell.addEventListener('mouseenter', (e) => showTooltip(e, `Res ${resNum}${r ? `<br>DiscoTope: ${score.toFixed(2)}<br>Epitop: ${r.predictedEpitope ? 'Ya' : 'Tidak'}` : '<br>tidak ada data'}`));
-      cell.addEventListener('mousemove', (e) => showTooltip(e, `Res ${resNum}${r ? `<br>DiscoTope: ${score.toFixed(2)}<br>Epitop: ${r.predictedEpitope ? 'Ya' : 'Tidak'}` : '<br>tidak ada data'}`));
+      cell.addEventListener('mouseenter', (e) => showTooltip(e, `Res ${resLabel(resNum)}${r ? `<br>DiscoTope: ${score.toFixed(2)}<br>Epitope: ${r.predictedEpitope ? 'Yes' : 'No'}` : '<br>no data'}`));
+      cell.addEventListener('mousemove', (e) => showTooltip(e, `Res ${resLabel(resNum)}${r ? `<br>DiscoTope: ${score.toFixed(2)}<br>Epitope: ${r.predictedEpitope ? 'Yes' : 'No'}` : '<br>no data'}`));
       cell.addEventListener('mouseleave', hideTooltip);
       cell.addEventListener('click', () => toggleHotspot(resNum));
       el.appendChild(cell);
@@ -277,12 +308,12 @@
     for (const resNum of window.AppState.hotspotResidues) {
       const chip = document.createElement('span');
       chip.className = 'hotspot-chip';
-      chip.textContent = `${resNum} ✕`;
+      chip.textContent = `${resLabel(resNum)} ✕`;
       chip.style.cursor = 'pointer';
       chip.addEventListener('click', () => toggleHotspot(resNum));
       container.appendChild(chip);
     }
-    $('hotspot-count').textContent = `${window.AppState.hotspotResidues.length} residu dipilih`;
+    $('hotspot-count').textContent = `${window.AppState.hotspotResidues.length} residues selected`;
     syncTrackHighlights();
   }
 
@@ -306,7 +337,7 @@
     });
     $('btn-goto-design').addEventListener('click', () => {
       if (!window.AppState.hotspotResidues.length) {
-        window.ConsolePanel.log('warn', 'Pilih minimal satu hotspot residue sebelum lanjut ke Desain.', 'target');
+        window.ConsolePanel.log('warn', 'Select at least one hotspot residue before continuing to Design.', 'target');
         return;
       }
       window.App.switchTab('design');

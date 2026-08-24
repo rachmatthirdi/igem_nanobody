@@ -34,19 +34,29 @@
     });
   }
 
+  // ---------------- OS / WSL detection ----------------
+  async function refreshPlatformInfo() {
+    try {
+      const info = await window.api.getPlatformInfo();
+      $('mon-detected-os').textContent = info.label;
+    } catch (e) {
+      $('mon-detected-os').textContent = 'error';
+    }
+  }
+
   // ---------------- GPU badge + system monitor ----------------
   async function refreshGpuStatus() {
     try {
       const status = await window.api.checkGpu();
       const badge = $('gpu-badge');
       if (status.cudaAvailable) {
-        badge.textContent = `🟢 GPU: ${status.gpuName || 'terdeteksi'}`;
+        badge.textContent = `🟢 GPU: ${status.gpuName || 'detected'}`;
         badge.className = 'badge badge-ok';
       } else {
-        badge.textContent = '🔴 GPU: tidak terdeteksi';
+        badge.textContent = '🔴 GPU: not detected';
         badge.className = 'badge badge-error';
       }
-      $('mon-gpu').textContent = status.cudaAvailable ? (status.gpuName || 'Ya') : 'Tidak terdeteksi';
+      $('mon-gpu').textContent = status.cudaAvailable ? (status.gpuName || 'Yes') : 'Not detected';
       $('mon-vram').textContent = status.vramTotalGb ? `${status.vramTotalGb} GB` : '-';
     } catch (e) {
       $('gpu-badge').textContent = '🔴 GPU: error';
@@ -57,7 +67,7 @@
     const s = await window.api.getSettings();
     $('mon-tools-env').textContent = s.toolsEnv;
     $('mon-discotope-env').textContent = s.discotopeEnv;
-    $('mon-rfab').textContent = s.rfantibodyDir ? '✓ dikonfigurasi' : '⚠ belum diatur';
+    $('mon-rfab').textContent = s.rfantibodyDir ? '✓ configured' : '⚠ not set';
     $('mon-execmode').textContent = s.rfantibodyExecMode;
     return s;
   }
@@ -101,7 +111,7 @@
       await window.api.saveSettings(settings);
       $('settings-modal').classList.add('hidden');
       refreshMonitorSettings();
-      window.ConsolePanel.log('ok', 'Pengaturan disimpan.', 'settings');
+      window.ConsolePanel.log('ok', 'Settings saved.', 'settings');
     });
   }
 
@@ -111,27 +121,27 @@
       const state = window.StateUtils.serialize();
       const res = await window.api.saveProject(state);
       window.AppState.id = res.id;
-      window.ConsolePanel.log('ok', `Proyek disimpan: ${res.id}`, 'project');
+      window.ConsolePanel.log('ok', `Project saved: ${res.id}`, 'project');
     });
 
     $('btn-load-project').addEventListener('click', async () => {
       const list = await window.api.listProjects();
       const container = $('projects-list');
       container.innerHTML = '';
-      if (!list.length) container.innerHTML = '<div style="color:var(--text-dim);padding:10px">Belum ada proyek tersimpan.</div>';
+      if (!list.length) container.innerHTML = '<div style="color:var(--text-dim);padding:10px">No saved projects yet.</div>';
       for (const p of list) {
         const div = document.createElement('div');
         div.className = 'project-item';
-        div.innerHTML = `<span>${p.name} <span style="color:var(--text-dim);font-size:11px">(${p.savedAt ? new Date(p.savedAt).toLocaleString('id-ID') : ''})</span></span>`;
+        div.innerHTML = `<span>${p.name} <span style="color:var(--text-dim);font-size:11px">(${p.savedAt ? new Date(p.savedAt).toLocaleString('en-US') : ''})</span></span>`;
         const btnLoad = document.createElement('button');
         btnLoad.className = 'btn btn-secondary';
-        btnLoad.textContent = 'Muat';
+        btnLoad.textContent = 'Load';
         btnLoad.addEventListener('click', async () => {
           const data = await window.api.loadProject(p.id);
           window.StateUtils.applyLoaded(data);
           $('projects-modal').classList.add('hidden');
           window.TabScreening?.refresh();
-          window.ConsolePanel.log('ok', `Proyek "${p.name}" dimuat.`, 'project');
+          window.ConsolePanel.log('ok', `Project "${p.name}" loaded.`, 'project');
         });
         div.appendChild(btnLoad);
         container.appendChild(div);
@@ -159,5 +169,6 @@
 
     refreshGpuStatus();
     refreshMonitorSettings();
+    refreshPlatformInfo();
   });
 })();

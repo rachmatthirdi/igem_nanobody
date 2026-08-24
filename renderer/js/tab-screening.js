@@ -80,6 +80,60 @@
     });
 
     updateSelectionSummary();
+    renderChart(candidates);
+  }
+
+  function chartTooltipHtml(c) {
+    return `<b>${c.id}</b><br>pLDDT ${fmt(c.plddt)} · PAE ${fmt(c.pae)}<br>CDR RMSD ${fmt(c.cdrRmsd)} Å · H3 RMSD ${fmt(c.h3Rmsd)} Å<br>ΔG ${fmt(c.dg)} kcal/mol`;
+  }
+
+  function showChartTooltip(evt, c) {
+    const tip = $('chart-tooltip');
+    tip.innerHTML = chartTooltipHtml(c);
+    tip.classList.remove('hidden');
+    const containerRect = document.querySelector('.candidates-chart').getBoundingClientRect();
+    tip.style.left = `${evt.clientX - containerRect.left + 12}px`;
+    tip.style.top = `${evt.clientY - containerRect.top - 10}px`;
+  }
+  function hideChartTooltip() { $('chart-tooltip').classList.add('hidden'); }
+
+  // Ranked bar chart: composite score per candidate, colored by pass/fail.
+  // Status is never color-alone - each bar also carries a PASS/FAIL text label.
+  function renderChart(candidates) {
+    const el = $('candidates-chart');
+    el.innerHTML = '';
+    if (!candidates.length) {
+      el.innerHTML = '<div style="padding:6px;color:var(--text-dim);font-size:11px">No candidates yet.</div>';
+      return;
+    }
+    for (const c of candidates) {
+      const row = document.createElement('div');
+      row.className = 'chart-row';
+
+      const label = document.createElement('div');
+      label.className = 'chart-label';
+      label.textContent = c.id;
+      label.title = c.id;
+
+      const track = document.createElement('div');
+      track.className = 'chart-bar-track';
+      const fill = document.createElement('div');
+      fill.className = `chart-bar-fill ${c.pass ? 'chart-bar-pass' : 'chart-bar-fail'}`;
+      fill.style.width = `${Math.max(c.composite, 0).toFixed(1)}%`;
+      track.appendChild(fill);
+      track.addEventListener('mouseenter', (e) => showChartTooltip(e, c));
+      track.addEventListener('mousemove', (e) => showChartTooltip(e, c));
+      track.addEventListener('mouseleave', hideChartTooltip);
+
+      const value = document.createElement('div');
+      value.className = `chart-value ${c.pass ? 'status-pass' : 'status-fail'}`;
+      value.textContent = `${fmt(c.composite, 1)}% ${c.pass ? 'PASS' : 'FAIL'}`;
+
+      row.appendChild(label);
+      row.appendChild(track);
+      row.appendChild(value);
+      el.appendChild(row);
+    }
   }
 
   function onSelectCandidate(id, checked, checkbox) {
@@ -87,7 +141,7 @@
     if (checked) {
       if (sel.length >= MAX_SELECTED) {
         checkbox.checked = false;
-        window.ConsolePanel.log('warn', `Maksimal ${MAX_SELECTED} kandidat dapat dipilih untuk codon optimization.`, 'screening');
+        window.ConsolePanel.log('warn', `A maximum of ${MAX_SELECTED} candidates can be selected for codon optimization.`, 'screening');
         return;
       }
       sel.push(id);
@@ -100,7 +154,7 @@
 
   function updateSelectionSummary() {
     const sel = window.AppState.selectedCandidateIds;
-    $('selected-candidates-summary').textContent = sel.length ? sel.join(', ') : 'Belum ada kandidat dipilih.';
+    $('selected-candidates-summary').textContent = sel.length ? sel.join(', ') : 'No candidates selected yet.';
     $('btn-codon-optimize').disabled = sel.length === 0;
   }
 
@@ -121,63 +175,12 @@
     }
   }
 
-  async function extractAminoAcidSeq(candidate) {
-    const pdbText = await window.api.readPdbFile(candidate.pdbPath);
-    const seenRes = new Set();
-    const AA_3TO1 = { ALA:'A',ARG:'R',ASN:'N',ASP:'D',CYS:'C',GLN:'Q',GLU:'E',GLY:'G',HIS:'H',ILE:'I',LEU:'L',LYS:'K',MET:'M',PHE:'F',PRO:'P',SER:'S',THR:'T',TRP:'W',TYR:'Y',VAL:'V',MSE:'M' };
-    let seq = '';
-    for (const line of pdbText.split(/\r?\n/)) {
-      if (!line.startsWith('ATOM')) continue;
-      if (line.charAt(21) !== 'H') continue;
-      if (line.slice(12, 16).trim() !== 'CA') continue;
-      const resNum = line.slice(22, 26).trim();
-      if (seenRes.has(resNum)) continue;
-      seenRes.add(resNum);
-      seq += AA_3TO1[line.slice(17, 20).trim()] || 'X';
-    }
-    return seq;
-  }
-
-  async function runCodonOptimization() {
-    const organism = $('f-organism').value;
-    const resultsEl = $('codon-results');
-    resultsEl.innerHTML = '';
-    $('btn-codon-optimize').disabled = true;
-
-    for (const id of window.AppState.selectedCandidateIds) {
-      const candidate = window.AppState.candidates.find((c) => c.id === id);
-      if (!candidate) continue;
-      try {
-        const aaSeq = candidate.aminoAcidSeq || (await extractAminoAcidSeq(candidate));
-        candidate.aminoAcidSeq = aaSeq;
-        const result = await window.api.codonOptimize({ aminoAcidSeq: aaSeq, organism });
-        candidate.dna = result.sequence_dna;
-        candidate.cai = result.cai;
-        candidate.gcContent = result.gc_content;
-        candidate.codonMethod = result.method;
-
-        const div = document.createElement('div');
-        div.className = 'card';
-        div.innerHTML = `
-          <div class="section-label">${id} — metode: ${result.method}</div>
-          <div class="sequence-view">${result.sequence_dna}</div>
-          <div class="anchor-meta">CAI: ${result.cai?.toFixed(3)} &nbsp;|&nbsp; GC%: ${result.gc_content?.toFixed(1)}%</div>
-        `;
-        resultsEl.appendChild(div);
-      } catch (e) {
-        window.ConsolePanel.log('error', `Codon optimization gagal untuk ${id}: ${e.message}`, 'screening');
-      }
-    }
-    $('btn-codon-optimize').disabled = false;
-    if (window.TabConstruct) window.TabConstruct.refreshCandidateOptions();
-  }
-
   function wireImport() {
     $('btn-import-metrics').addEventListener('click', async () => {
       const res = await window.api.importMetricsDialog({ candidates: window.AppState.candidates });
       if (res.imported) {
         window.AppState.candidates = res.candidates;
-        $('import-status').textContent = `Diimpor dari ${res.fileName}`;
+        $('import-status').textContent = `Imported from ${res.fileName}`;
         renderTable();
       }
     });
@@ -187,7 +190,6 @@
     init() {
       wireFilters();
       wireImport();
-      $('btn-codon-optimize').addEventListener('click', runCodonOptimization);
     },
     refresh() { renderTable(); },
   };

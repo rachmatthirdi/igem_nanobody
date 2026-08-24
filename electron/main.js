@@ -3,6 +3,23 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
+// On native Wayland sessions, Chromium's default wayland ozone backend can
+// segfault at startup when combined with Vulkan on some GPU/driver stacks
+// ("--ozone-platform=wayland is not compatible with Vulkan"). --ozone-platform
+// has to be a literal CLI argument - app.commandLine.appendSwitch() runs too
+// late, after ozone has already initialized - so relaunch once with it added.
+if (
+  process.platform === 'linux' &&
+  (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY) &&
+  !process.argv.includes('--ozone-platform=x11')
+) {
+  spawn(process.execPath, [...process.argv.slice(1), '--ozone-platform=x11'], {
+    stdio: 'inherit',
+    env: process.env,
+  }).on('exit', (code) => process.exit(code ?? 0));
+  return;
+}
+
 const ROOT = path.join(__dirname, '..');
 const DIRS = {
   cachePdb: path.join(ROOT, 'cache', 'pdb'),
@@ -19,6 +36,50 @@ for (const dir of Object.values(DIRS)) fs.mkdirSync(dir, { recursive: true });
 let mainWindow = null;
 
 // ---------------------------------------------------------------------------
+// Platform detection (OS / WSL2) - picks a sensible default RFantibody exec
+// mode instead of making every user figure it out for themselves. WSL2's
+// Linux kernel reports process.platform === 'linux' just like a native Linux
+// host, so it can't be told apart by platform alone - /proc/version (or the
+// WSL_DISTRO_NAME/WSL_INTEROP env vars WSL sets) is what actually reveals it.
+// Note this only matters when Electron itself runs on Windows and needs to
+// reach INTO a WSL2 distro via wsl.exe; if Electron is already running as a
+// Linux process (bare-metal or inside WSL2 via WSLg), 'native' is correct
+// either way since it can invoke RFantibody with a plain bash shell.
+// ---------------------------------------------------------------------------
+function detectPlatformInfo() {
+  const platform = process.platform; // 'win32' | 'darwin' | 'linux' | ...
+  let isWSL = false;
+  if (platform === 'linux') {
+    try {
+      isWSL = /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8'));
+    } catch {
+      // /proc/version should always exist on Linux, but don't crash startup if it doesn't.
+    }
+    if (!isWSL && (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) isWSL = true;
+  }
+
+  let label;
+  let recommendedExecMode;
+  if (platform === 'win32') {
+    label = 'Windows';
+    recommendedExecMode = 'wsl';
+  } else if (platform === 'darwin') {
+    label = 'macOS';
+    recommendedExecMode = 'docker'; // no WSL on macOS; Docker Desktop is the only bridge (no GPU passthrough though)
+  } else if (isWSL) {
+    label = `Linux (WSL2${process.env.WSL_DISTRO_NAME ? `: ${process.env.WSL_DISTRO_NAME}` : ''})`;
+    recommendedExecMode = 'native';
+  } else {
+    label = 'Linux (native)';
+    recommendedExecMode = 'native';
+  }
+
+  return { platform, isWSL, label, recommendedExecMode };
+}
+
+const PLATFORM_INFO = detectPlatformInfo();
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 const DEFAULT_SETTINGS = {
@@ -27,7 +88,7 @@ const DEFAULT_SETTINGS = {
   discotopeEnv: 'discotope',
   discotopeRepoDir: '',
   rfantibodyDir: '',
-  rfantibodyExecMode: 'wsl', // 'wsl' | 'docker' | 'native'
+  rfantibodyExecMode: PLATFORM_INFO.recommendedExecMode, // 'wsl' | 'docker' | 'native'
   wslDistro: 'Ubuntu',
   dockerImage: 'rfantibody',
   caiOrganism: 'Escherichia coli general',
@@ -87,7 +148,6 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     sendLog('info', `$ ${cmd} ${args.join(' ')}`, source);
     const child = spawn(cmd, args, {
       cwd: cwd || ROOT,
-      shell: true,
       env: { ...process.env, ...(env || {}) },
     });
 
@@ -107,16 +167,16 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     });
 
     child.on('error', (err) => {
-      sendLog('error', `Gagal menjalankan proses: ${err.message}`, source);
+      sendLog('error', `Failed to run process: ${err.message}`, source);
       reject(err);
     });
 
     child.on('close', (code) => {
       if (code === 0) {
-        sendLog('ok', `Proses selesai (${source})`, source);
+        sendLog('ok', `Process finished (${source})`, source);
         resolve({ code, stdout, stderr });
       } else {
-        sendLog('error', `Proses gagal dengan kode ${code} (${source})`, source);
+        sendLog('error', `Process failed with code ${code} (${source})`, source);
         reject(new Error(`${source} exited with code ${code}: ${stderr.slice(-2000) || stdout.slice(-2000)}`));
       }
     });
@@ -147,20 +207,20 @@ function toWslPath(winPath) {
 function runRfantibodyCommand(commandLine, source) {
   const settings = getSettings();
   if (!settings.rfantibodyDir) {
-    return Promise.reject(new Error('Path RFantibody belum dikonfigurasi. Buka Settings dan pilih folder instalasi RFantibody.'));
+    return Promise.reject(new Error('RFantibody path not configured. Open Settings and choose the RFantibody installation folder.'));
   }
 
   if (settings.rfantibodyExecMode === 'wsl') {
     const wslDir = toWslPath(settings.rfantibodyDir);
     const full = `cd '${wslDir}' && source .venv/bin/activate 2>/dev/null; ${commandLine}`;
-    return runProcess('wsl.exe', ['-d', settings.wslDistro, '--', 'bash', '-lc', `"${full.replace(/"/g, '\\"')}"`], { source });
+    return runProcess('wsl.exe', ['-d', settings.wslDistro, '--', 'bash', '-lc', full], { source });
   }
 
   if (settings.rfantibodyExecMode === 'docker') {
     const full = `cd /workspace && ${commandLine}`;
     return runProcess(
       'docker',
-      ['run', '--rm', '--gpus', 'all', '-v', `${settings.rfantibodyDir}:/workspace`, '-w', '/workspace', settings.dockerImage, 'bash', '-lc', `"${full.replace(/"/g, '\\"')}"`],
+      ['run', '--rm', '--gpus', 'all', '-v', `${settings.rfantibodyDir}:/workspace`, '-w', '/workspace', settings.dockerImage, 'bash', '-lc', full],
       { source }
     );
   }
@@ -256,6 +316,31 @@ function writeCacheJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
+// discotope3/main.py always nests its real output one level deeper, under
+// out_dir/<basename of --pdb_dir>/ (see get_basename_no_ext(args.pdb_dir) in
+// its source) - so a flat readdirSync(outDir) never finds the CSV. Search
+// recursively instead of assuming a flat layout.
+function findFileRecursive(dir, matchFn, maxDepth = 3) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (entry.isFile() && matchFn(entry.name)) return path.join(dir, entry.name);
+  }
+  if (maxDepth > 0) {
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const found = findFileRecursive(path.join(dir, entry.name), matchFn, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // IPC: Tab 1 - Target
 // ---------------------------------------------------------------------------
@@ -264,19 +349,19 @@ ipcMain.handle('fetch-pdb', async (_evt, pdbId) => {
   const pdbPath = path.join(DIRS.cachePdb, `${id}.pdb`);
   const chainAPath = path.join(DIRS.cachePdb, `${id}_chainA.pdb`);
 
-  sendProgress('download-pdb', 10, 'running', `Mengunduh ${id}.pdb dari RCSB...`);
+  sendProgress('download-pdb', 10, 'running', `Downloading ${id}.pdb from RCSB...`);
   let pdbText;
   if (fs.existsSync(pdbPath)) {
     pdbText = fs.readFileSync(pdbPath, 'utf8');
-    sendLog('info', `${id}.pdb ditemukan di cache lokal.`, 'download-pdb');
+    sendLog('info', `${id}.pdb found in local cache.`, 'download-pdb');
   } else {
     const url = `https://files.rcsb.org/download/${id}.pdb`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`RCSB mengembalikan status ${res.status} untuk PDB ID "${id}"`);
+    if (!res.ok) throw new Error(`RCSB returned status ${res.status} for PDB ID "${id}"`);
     pdbText = await res.text();
     fs.writeFileSync(pdbPath, pdbText, 'utf8');
   }
-  sendProgress('download-pdb', 60, 'running', 'Mengekstrak Chain A...');
+  sendProgress('download-pdb', 60, 'running', 'Extracting Chain A...');
 
   const chainAText = extractChain(pdbText, 'A');
   fs.writeFileSync(chainAPath, chainAText, 'utf8');
@@ -289,11 +374,11 @@ ipcMain.handle('fetch-pdb', async (_evt, pdbId) => {
       title = data?.struct?.title || '';
     }
   } catch (e) {
-    sendLog('warn', `Gagal mengambil judul struktur: ${e.message}`, 'download-pdb');
+    sendLog('warn', `Failed to fetch structure title: ${e.message}`, 'download-pdb');
   }
 
   const sizeKB = Math.round(Buffer.byteLength(pdbText, 'utf8') / 1024);
-  sendProgress('download-pdb', 100, 'done', `Selesai (${sizeKB} KB)`);
+  sendProgress('download-pdb', 100, 'done', `Done (${sizeKB} KB)`);
 
   return { pdbId: id, pdbPath, chainAPath, sizeKB, title };
 });
@@ -316,12 +401,13 @@ ipcMain.handle('run-interpro', async (_evt, { pdbId, forceRefresh }) => {
   if (!forceRefresh) {
     const cached = readCacheJson(cacheFile);
     if (cached) {
-      sendLog('info', `Domain InterPro untuk ${id} dimuat dari cache.`, 'interpro');
+      sendLog('info', `InterPro domains for ${id} loaded from cache.`, 'interpro');
+      sendProgress('interpro', 100, 'done', `${cached.length} domains loaded from cache`);
       return { domains: cached, fromCache: true };
     }
   }
 
-  sendProgress('interpro', 20, 'running', 'Menghubungi EBI InterPro API...');
+  sendProgress('interpro', 20, 'running', 'Contacting EBI InterPro API...');
   const url = `https://www.ebi.ac.uk/interpro/api/entry/interpro/structure/pdb/${id}`;
   let domains = [];
   try {
@@ -346,12 +432,12 @@ ipcMain.handle('run-interpro', async (_evt, { pdbId, forceRefresh }) => {
       };
     });
     writeCacheJson(cacheFile, domains);
-    sendProgress('interpro', 100, 'done', `${domains.length} domain ditemukan`);
+    sendProgress('interpro', 100, 'done', `${domains.length} domains found`);
   } catch (e) {
-    sendLog('warn', `InterPro fetch gagal: ${e.message}`, 'interpro');
+    sendLog('warn', `InterPro fetch failed: ${e.message}`, 'interpro');
     const cached = readCacheJson(cacheFile);
     if (cached) {
-      sendLog('info', 'Menggunakan cache lama sebagai fallback.', 'interpro');
+      sendLog('info', 'Using stale cache as a fallback.', 'interpro');
       return { domains: cached, fromCache: true };
     }
     sendProgress('interpro', 100, 'error', e.message);
@@ -362,21 +448,21 @@ ipcMain.handle('run-interpro', async (_evt, { pdbId, forceRefresh }) => {
 });
 
 ipcMain.handle('run-freesasa', async (_evt, { chainAPath }) => {
-  sendProgress('freesasa', 10, 'running', 'Menjalankan FreeSASA...');
+  sendProgress('freesasa', 10, 'running', 'Running FreeSASA...');
   const settings = getSettings();
   const outJson = path.join(DIRS.work, `sasa_${Date.now()}.json`);
   await runCondaPython(settings.toolsEnv, path.join(DIRS.python, 'run_freesasa.py'), [chainAPath, outJson], { source: 'freesasa' });
   const result = readCacheJson(outJson);
-  sendProgress('freesasa', 100, 'done', `${result?.residues?.length || 0} residu dianalisis`);
+  sendProgress('freesasa', 100, 'done', `${result?.residues?.length || 0} residues analyzed`);
   return result;
 });
 
 ipcMain.handle('run-discotope', async (_evt, { chainAPath, pdbId }) => {
   const settings = getSettings();
   if (!settings.discotopeRepoDir) {
-    throw new Error('Path repository DiscoTope-3.0 belum dikonfigurasi di Settings.');
+    throw new Error('DiscoTope-3.0 repository path not configured in Settings.');
   }
-  sendProgress('discotope', 10, 'running', 'Memuat model DiscoTope-3.0...');
+  sendProgress('discotope', 10, 'running', 'Loading DiscoTope-3.0 model...');
 
   const inDir = path.join(DIRS.work, `discotope_in_${Date.now()}`);
   const outDir = path.join(DIRS.work, `discotope_out_${Date.now()}`);
@@ -386,7 +472,7 @@ ipcMain.handle('run-discotope', async (_evt, { chainAPath, pdbId }) => {
 
   const scriptPath = path.join(settings.discotopeRepoDir, 'discotope3', 'main.py');
   const modelsDir = path.join(settings.discotopeRepoDir, 'models');
-  sendProgress('discotope', 30, 'running', 'Memprediksi epitop...');
+  sendProgress('discotope', 30, 'running', 'Predicting epitopes...');
   await runCondaPython(
     settings.discotopeEnv,
     scriptPath,
@@ -394,13 +480,15 @@ ipcMain.handle('run-discotope', async (_evt, { chainAPath, pdbId }) => {
     { source: 'discotope' }
   );
 
-  // Real output filename per discotope3/main.py: {out_dir}/{pdb}_discotope3.csv
+  // Real output filename per discotope3/main.py: {out_dir}/{out_name}/{pdb}_discotope3.csv,
+  // where out_name = basename of --pdb_dir (get_basename_no_ext(args.pdb_dir) in main()) -
+  // i.e. always one directory deeper than out_dir itself, so this must recurse.
   // Real column order (verified against the source, not guessed):
   // pdb, chain, res_id, residue, DiscoTope-3.0_score, calibrated_score, epitope, rsa, pLDDTs, length, alphafold_struc_flag
-  const csvFile = fs.readdirSync(outDir).find((f) => f.endsWith('.csv'));
-  if (!csvFile) throw new Error('DiscoTope-3.0 tidak menghasilkan file CSV output.');
+  const csvPath = findFileRecursive(outDir, (f) => f.endsWith('_discotope3.csv'));
+  if (!csvPath) throw new Error('DiscoTope-3.0 did not produce an output CSV file.');
 
-  const csvText = fs.readFileSync(path.join(outDir, csvFile), 'utf8');
+  const csvText = fs.readFileSync(csvPath, 'utf8');
   const lines = csvText.trim().split(/\r?\n/);
   const header = lines[0].split(',').map((h) => h.trim());
   const residues = lines.slice(1).map((line) => {
@@ -418,17 +506,17 @@ ipcMain.handle('run-discotope', async (_evt, { chainAPath, pdbId }) => {
     };
   });
 
-  sendProgress('discotope', 100, 'done', `${residues.length} residu diprediksi`);
+  sendProgress('discotope', 100, 'done', `${residues.length} residues predicted`);
   return { residues };
 });
 
 // ---------------------------------------------------------------------------
-// IPC: Tab 2 - Desain
+// IPC: Tab 2 - Design
 // ---------------------------------------------------------------------------
 ipcMain.handle('get-scaffold-sequence', async (_evt, { scaffoldName }) => {
   const settings = getSettings();
   if (!settings.rfantibodyDir) {
-    throw new Error('Path RFantibody belum dikonfigurasi di Settings. Perlu folder scripts/examples/example_inputs/ dari repo RFantibody.');
+    throw new Error('RFantibody path not configured in Settings. Needs the scripts/examples/example_inputs/ folder from the RFantibody repo.');
   }
   const fileMap = {
     '3DWT': 'h-NbBCII10.pdb',
@@ -436,7 +524,7 @@ ipcMain.handle('get-scaffold-sequence', async (_evt, { scaffoldName }) => {
   const fileName = fileMap[scaffoldName] || 'h-NbBCII10.pdb';
   const filePath = path.join(settings.rfantibodyDir, 'scripts', 'examples', 'example_inputs', fileName);
   if (!fs.existsSync(filePath)) {
-    throw new Error(`File framework tidak ditemukan: ${filePath}`);
+    throw new Error(`Framework file not found: ${filePath}`);
   }
   const pdbText = fs.readFileSync(filePath, 'utf8');
   const { sequence, residueNumbers } = parseChainSequence(pdbText, 'H');
@@ -446,7 +534,7 @@ ipcMain.handle('get-scaffold-sequence', async (_evt, { scaffoldName }) => {
 
 ipcMain.handle('run-rfdiffusion', async (_evt, params) => {
   const { targetPdbPath, pdbId, scaffoldFilePath, outputName, numDesigns, designLoops, hotspotResidues } = params;
-  sendProgress('rfdiffusion', 5, 'running', 'Menyiapkan file target (rename Chain A -> T)...');
+  sendProgress('rfdiffusion', 5, 'running', 'Preparing target file (rename Chain A -> T)...');
 
   const targetText = fs.readFileSync(targetPdbPath, 'utf8');
   const targetT = renameChain(targetText, 'A', 'T');
@@ -459,12 +547,15 @@ ipcMain.handle('run-rfdiffusion', async (_evt, params) => {
   const relOutDir = path.join('work', outputName || `rfdiff_${Date.now()}`);
   const outDirAbs = path.join(ROOT, relOutDir);
   fs.mkdirSync(outDirAbs, { recursive: true });
-  const outPrefix = path.join(relOutDir, 'design');
+  // Absolute path: runRfantibodyCommand executes with cwd = rfantibodyDir
+  // (or /workspace under Docker), not this app's ROOT, so a relative -o
+  // would land inside the RFantibody checkout instead of our work/ dir.
+  const outPrefix = path.join(outDirAbs, 'design');
   const hotspotStr = hotspotResidues.map((r) => `T${r}`).join(',');
 
-  sendProgress('rfdiffusion', 20, 'running', 'Menjalankan RFdiffusion...');
+  sendProgress('rfdiffusion', 20, 'running', 'Running RFdiffusion...');
   await runRfantibodyCommand(
-    `uv run rfdiffusion -t '${toWslPath(targetTPath)}' -f '${toWslPath(scaffoldFilePath)}' -o '${outPrefix}' -n ${numDesigns} -l "${designLoops}" -h "${hotspotStr}"`,
+    `uv run rfdiffusion -t '${toWslPath(targetTPath)}' -f '${toWslPath(scaffoldFilePath)}' -o '${toWslPath(outPrefix)}' -n ${numDesigns} -l "${designLoops}" -h "${hotspotStr}"`,
     'rfdiffusion'
   );
 
@@ -473,44 +564,46 @@ ipcMain.handle('run-rfdiffusion', async (_evt, params) => {
     .filter((f) => f.endsWith('.pdb'))
     .map((f) => path.join(outDirAbs, f));
 
-  sendProgress('rfdiffusion', 100, 'done', `${backbones.length} backbone dihasilkan`);
+  sendProgress('rfdiffusion', 100, 'done', `${backbones.length} backbones generated`);
   return { backbones, backboneDir: outDirAbs, targetTPath };
 });
 
 ipcMain.handle('run-proteinmpnn', async (_evt, params) => {
   const { backboneDir, designsPerBackbone, temperature } = params;
-  sendProgress('proteinmpnn', 10, 'running', 'Menjalankan ProteinMPNN...');
+  sendProgress('proteinmpnn', 10, 'running', 'Running ProteinMPNN...');
   const outDir = path.join('work', `mpnn_out_${Date.now()}`);
-  fs.mkdirSync(path.join(ROOT, outDir), { recursive: true });
+  const outDirAbs = path.join(ROOT, outDir);
+  fs.mkdirSync(outDirAbs, { recursive: true });
 
   await runRfantibodyCommand(
-    `uv run proteinmpnn -i '${toWslPath(backboneDir)}' -o '${outDir}' -n ${designsPerBackbone} -t ${temperature}`,
+    `uv run proteinmpnn -i '${toWslPath(backboneDir)}' -o '${toWslPath(outDirAbs)}' -n ${designsPerBackbone} -t ${temperature}`,
     'proteinmpnn'
   );
 
-  sendProgress('proteinmpnn', 100, 'done', 'Sekuens kandidat dihasilkan');
-  return { seqDir: path.join(ROOT, outDir) };
+  sendProgress('proteinmpnn', 100, 'done', 'Candidate sequences generated');
+  return { seqDir: outDirAbs };
 });
 
 ipcMain.handle('run-rf2', async (_evt, params) => {
   const { seqDir, numRecycles } = params;
-  sendProgress('rf2', 10, 'running', 'Menjalankan RF2 (RoseTTAFold2)...');
+  sendProgress('rf2', 10, 'running', 'Running RF2 (RoseTTAFold2)...');
   const outDir = path.join('work', `rf2_out_${Date.now()}`);
-  fs.mkdirSync(path.join(ROOT, outDir), { recursive: true });
+  const outDirAbs = path.join(ROOT, outDir);
+  fs.mkdirSync(outDirAbs, { recursive: true });
 
   await runRfantibodyCommand(
-    `uv run rf2 -i '${toWslPath(seqDir)}' -o '${outDir}' -r ${numRecycles || 10}`,
+    `uv run rf2 -i '${toWslPath(seqDir)}' -o '${toWslPath(outDirAbs)}' -r ${numRecycles || 10}`,
     'rf2'
   );
 
-  sendProgress('rf2', 100, 'done', 'Prediksi struktur selesai');
-  return { rf2OutDir: path.join(ROOT, outDir) };
+  sendProgress('rf2', 100, 'done', 'Structure prediction done');
+  return { rf2OutDir: outDirAbs };
 });
 
 ipcMain.handle('score-candidates', async (_evt, params) => {
   const { rf2OutDir, backboneDir, cdr, toolsEnvOverride } = params;
   const settings = getSettings();
-  sendProgress('scoring', 10, 'running', 'Menghitung metrik kandidat...');
+  sendProgress('scoring', 10, 'running', 'Computing candidate metrics...');
 
   const cdrJsonPath = path.join(DIRS.work, `cdr_${Date.now()}.json`);
   writeCacheJson(cdrJsonPath, cdr || {});
@@ -524,7 +617,7 @@ ipcMain.handle('score-candidates', async (_evt, params) => {
   );
 
   const result = readCacheJson(outJson) || { candidates: [] };
-  sendProgress('scoring', 100, 'done', `${result.candidates.length} kandidat di-scoring`);
+  sendProgress('scoring', 100, 'done', `${result.candidates.length} candidates scored`);
   return result;
 });
 
@@ -533,7 +626,7 @@ ipcMain.handle('score-candidates', async (_evt, params) => {
 // ---------------------------------------------------------------------------
 ipcMain.handle('import-metrics-dialog', async (_evt, { candidates }) => {
   const res = await dialog.showOpenDialog(mainWindow, {
-    title: 'Pilih File Metrics RF2',
+    title: 'Choose RF2 Metrics File',
     filters: [{ name: 'Metrics', extensions: ['json', 'csv', 'sc'] }],
     properties: ['openFile'],
   });
@@ -571,13 +664,13 @@ ipcMain.handle('import-metrics-dialog', async (_evt, { candidates }) => {
     }
   }
 
-  sendLog('ok', `Metrics diimpor dari ${path.basename(filePath)}, ${parsedRows.length} baris.`, 'import-metrics');
+  sendLog('ok', `Metrics imported from ${path.basename(filePath)}, ${parsedRows.length} rows.`, 'import-metrics');
   return { candidates: Array.from(byId.values()), imported: true, fileName: path.basename(filePath) };
 });
 
 ipcMain.handle('codon-optimize', async (_evt, { aminoAcidSeq, organism }) => {
   const settings = getSettings();
-  sendProgress('codon-optimize', 10, 'running', 'Menjalankan CodonTransformer...');
+  sendProgress('codon-optimize', 10, 'running', 'Running CodonTransformer...');
   const outJson = path.join(DIRS.work, `codon_${Date.now()}.json`);
   await runCondaPython(
     settings.toolsEnv,
@@ -586,18 +679,19 @@ ipcMain.handle('codon-optimize', async (_evt, { aminoAcidSeq, organism }) => {
     { source: 'codon-optimize' }
   );
   const result = readCacheJson(outJson);
-  sendProgress('codon-optimize', 100, 'done', `Metode: ${result?.method}`);
+  sendProgress('codon-optimize', 100, 'done', `Method: ${result?.method}`);
   return result;
 });
 
 ipcMain.handle('calculate-cai', async (_evt, { dnaSeq }) => {
+  const settings = getSettings();
   const outJson = path.join(DIRS.work, `cai_${Date.now()}.json`);
-  await runProcess('python', [path.join(DIRS.python, 'calculate_cai.py'), '--dna', dnaSeq, '--out', outJson], { source: 'cai' });
+  await runCondaPython(settings.toolsEnv, path.join(DIRS.python, 'calculate_cai.py'), ['--dna', dnaSeq, '--out', outJson], { source: 'cai' });
   return readCacheJson(outJson);
 });
 
 // ---------------------------------------------------------------------------
-// IPC: Tab 4 - Konstruk
+// IPC: Tab 4 - Construct
 // ---------------------------------------------------------------------------
 const UNIPROT_ACCESSIONS = {
   lpp: { primary: 'P69776', label: 'Lpp (Braun\'s lipoprotein)' },
@@ -608,7 +702,7 @@ const UNIPROT_ACCESSIONS = {
 
 async function fetchUniprotFasta(accession) {
   const res = await fetch(`https://rest.uniprot.org/uniprotkb/${accession}.fasta`);
-  if (!res.ok) throw new Error(`UniProt status ${res.status} untuk ${accession}`);
+  if (!res.ok) throw new Error(`UniProt status ${res.status} for ${accession}`);
   const text = await res.text();
   const lines = text.trim().split(/\r?\n/);
   const header = lines[0];
@@ -618,7 +712,7 @@ async function fetchUniprotFasta(accession) {
 
 ipcMain.handle('fetch-anchor', async (_evt, { type, forceRefresh }) => {
   const entry = UNIPROT_ACCESSIONS[type];
-  if (!entry) throw new Error(`Tipe anchor tidak dikenal: ${type}`);
+  if (!entry) throw new Error(`Unknown anchor type: ${type}`);
   const cacheFile = path.join(DIRS.cacheAnchors, `fetch_${type}_result.json`);
 
   if (!forceRefresh) {
@@ -626,20 +720,20 @@ ipcMain.handle('fetch-anchor', async (_evt, { type, forceRefresh }) => {
     if (cached) return { ...cached, fromCache: true };
   }
 
-  sendProgress('anchor-fetch', 20, 'running', `Mengambil sekuens ${entry.label} dari UniProt...`);
+  sendProgress('anchor-fetch', 20, 'running', `Fetching ${entry.label} sequence from UniProt...`);
   let result;
   try {
     const data = await fetchUniprotFasta(entry.primary);
     result = { ...data, label: entry.label, source: `https://rest.uniprot.org/uniprotkb/${entry.primary}` };
   } catch (e) {
     if (entry.fallback) {
-      sendLog('warn', `${entry.primary} gagal (${e.message}), mencoba fallback ${entry.fallback}...`, 'anchor-fetch');
+      sendLog('warn', `${entry.primary} failed (${e.message}), trying fallback ${entry.fallback}...`, 'anchor-fetch');
       const data = await fetchUniprotFasta(entry.fallback);
       result = { ...data, label: entry.label, source: `https://rest.uniprot.org/uniprotkb/${entry.fallback}` };
     } else {
       const cached = readCacheJson(cacheFile);
       if (cached) {
-        sendLog('warn', 'Fetch gagal, menggunakan cache lama.', 'anchor-fetch');
+        sendLog('warn', 'Fetch failed, using stale cache.', 'anchor-fetch');
         return { ...cached, fromCache: true };
       }
       throw e;
@@ -647,14 +741,14 @@ ipcMain.handle('fetch-anchor', async (_evt, { type, forceRefresh }) => {
   }
 
   writeCacheJson(cacheFile, result);
-  sendProgress('anchor-fetch', 100, 'done', `${result.sequence.length} residu diterima`);
+  sendProgress('anchor-fetch', 100, 'done', `${result.sequence.length} residues received`);
   return { ...result, fromCache: false };
 });
 
 ipcMain.handle('build-anchor-construct', async (_evt, params) => {
   const { anchorSeq, nanobodyDna, organism } = params;
   const settings = getSettings();
-  sendProgress('anchor-construct', 20, 'running', 'Membangun konstruk anchor + linker + nanobody...');
+  sendProgress('anchor-construct', 20, 'running', 'Building anchor + linker + nanobody construct...');
   const argsJson = path.join(DIRS.work, `anchor_args_${Date.now()}.json`);
   const outJson = path.join(DIRS.work, `anchor_out_${Date.now()}.json`);
   writeCacheJson(argsJson, { anchor_aa: anchorSeq, nanobody_dna: nanobodyDna, organism: organism || settings.caiOrganism });
@@ -667,22 +761,22 @@ ipcMain.handle('build-anchor-construct', async (_evt, params) => {
   );
 
   const result = readCacheJson(outJson);
-  sendProgress('anchor-construct', 100, 'done', 'Konstruk selesai dibangun');
+  sendProgress('anchor-construct', 100, 'done', 'Construct built');
   return result;
 });
 
 ipcMain.handle('build-plasmid', async (_evt, params) => {
   const settings = getSettings();
-  sendProgress('plasmid', 20, 'running', 'Merakit insert & FASTA...');
+  sendProgress('plasmid', 20, 'running', 'Assembling insert & FASTA...');
 
   let pelbAminoAcidSeq = null;
   if (params.includePelb) {
-    sendProgress('plasmid', 35, 'running', 'Mengambil sekuens PelB dari UniProt...');
+    sendProgress('plasmid', 35, 'running', 'Fetching PelB sequence from UniProt...');
     try {
       const { sequence } = await fetchUniprotFasta(UNIPROT_ACCESSIONS.pelb.primary);
       pelbAminoAcidSeq = sequence;
     } catch (e) {
-      sendLog('warn', `Gagal mengambil PelB dari UniProt: ${e.message}. PelB akan dilewati.`, 'plasmid');
+      sendLog('warn', `Failed to fetch PelB from UniProt: ${e.message}. PelB will be skipped.`, 'plasmid');
     }
   }
 
@@ -698,7 +792,7 @@ ipcMain.handle('build-plasmid', async (_evt, params) => {
   );
 
   const result = readCacheJson(outJson);
-  sendProgress('plasmid', 100, 'done', `FASTA disimpan: ${result?.fastaPath ? path.basename(result.fastaPath) : ''}`);
+  sendProgress('plasmid', 100, 'done', `FASTA saved: ${result?.fastaPath ? path.basename(result.fastaPath) : ''}`);
   return result;
 });
 
@@ -708,8 +802,10 @@ ipcMain.handle('open-output-folder', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC: Lintas-tab
+// IPC: Cross-tab
 // ---------------------------------------------------------------------------
+ipcMain.handle('get-platform-info', async () => PLATFORM_INFO);
+
 ipcMain.handle('check-gpu', async () => {
   const settings = getSettings();
   try {
@@ -717,7 +813,7 @@ ipcMain.handle('check-gpu', async () => {
     const jsonLine = stdout.trim().split(/\r?\n/).pop();
     return JSON.parse(jsonLine);
   } catch (e) {
-    sendLog('warn', `Pre-flight GPU check gagal: ${e.message}`, 'gpu-check');
+    sendLog('warn', `Pre-flight GPU check failed: ${e.message}`, 'gpu-check');
     return { cudaAvailable: false, gpuName: null, vramTotalGb: null, error: e.message };
   }
 });
@@ -779,7 +875,22 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  if (process.env.DEBUG_CONSOLE_FORWARD) {
+    mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+    });
+  }
   mainWindow.loadFile(path.join(ROOT, 'renderer', 'index.html'));
+  if (process.env.DEBUG_AUTOTEST_PDB) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        mainWindow.webContents.executeJavaScript(`
+          document.getElementById('pdb-id-input').value = '${process.env.DEBUG_AUTOTEST_PDB}';
+          document.getElementById('btn-analyze').click();
+        `);
+      }, 500);
+    });
+  }
 }
 
 app.whenReady().then(createWindow);

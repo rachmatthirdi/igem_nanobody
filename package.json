@@ -1,7 +1,7 @@
 {
   "name": "nanobody-designer",
   "version": "0.1.0",
-  "description": "GUI aplikasi desain nanobody: Target -> Desain -> Screening -> Konstruk",
+  "description": "Nanobody design GUI: Target -> Design -> Screening -> Construct",
   "main": "electron/main.js",
   "author": "Nanobody Designer",
   "license": "MIT",
@@ -11,12 +11,9 @@
     "dev": "electron . --dev"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^41.10.5"
   },
   "dependencies": {
-    "three": "^0.165.0"
-  },
-  "allowScripts": {
-    "electron@31.7.7": true
+    "pdbe-molstar": "^3.12.0"
   }
 }

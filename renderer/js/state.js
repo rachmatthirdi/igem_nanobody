@@ -14,7 +14,7 @@ window.AppState = {
   discotopeResidues: [],
   hotspotResidues: [], // array of residue numbers selected by the user
 
-  // Tab 2 - Desain
+  // Tab 2 - Design
   scaffold: null, // { scaffoldName, filePath, sequence, residueNumbers, cdr }
   scaffoldConfig: null, // { scaffold_name, cdr_designed, cdr_config, backbone_number, mpnn_designs, mpnn_temperature }
   backbones: [],
@@ -27,7 +27,7 @@ window.AppState = {
   selectedCandidateIds: [],
   filterWeights: { plddt: 0.2, pae: 0.2, cdrRmsd: 0.2, h3Rmsd: 0.2, dg: 0.2 },
 
-  // Tab 4 - Konstruk
+  // Tab 4 - Construct
   anchor: null, // { type, sequence, header, label, source }
   constructCandidateId: null,
   constructDna: null,

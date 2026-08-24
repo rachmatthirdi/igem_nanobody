@@ -184,6 +184,7 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
 .progress-fill.done { background: var(--ok); }
 .progress-fill.error { background: var(--error); }
 .progress-status { font-size: 11px; color: var(--text-dim); margin-top: 3px; min-height: 14px; }
+.progress-eta { font-weight: 400; opacity: 0.7; }
 
 .pipeline-stage-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-weight: 600; }
 .gpu-warning {
@@ -238,12 +239,38 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
 .hotspot-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .hotspot-chip { background: var(--accent-dim); color: #fff; border-radius: 12px; padding: 3px 9px; font-size: 11px; }
 
+/* ---------------- Candidates chart (Screening) ---------------- */
+.chart-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.chart-legend { display: flex; gap: 14px; }
+.chart-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
+.chart-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.chart-swatch-pass { background: var(--ok); }
+.chart-swatch-fail { background: var(--error); }
+.candidates-chart { position: relative; margin-top: 12px; }
+.candidates-chart-rows { display: flex; flex-direction: column; gap: 2px; }
+.chart-row { display: grid; grid-template-columns: 160px 1fr 90px; align-items: center; gap: 10px; }
+.chart-label { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-bar-track { height: 20px; background: var(--bg-elev); border-radius: 4px; position: relative; cursor: default; }
+.chart-bar-fill { height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; transition: width 0.2s ease; }
+.chart-bar-fill.chart-bar-pass { background: var(--ok); }
+.chart-bar-fill.chart-bar-fail { background: var(--error); }
+.chart-value { font-size: 11px; text-align: right; white-space: nowrap; }
+
 /* ---------------- Tables ---------------- */
 .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
 .data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
 .data-table th { color: var(--text-dim); font-weight: 600; text-transform: uppercase; font-size: 10px; }
 .data-table tr:hover { background: rgba(79,140,255,0.06); }
 .cdr-len-input { width: 70px; }
+.cdr-range-cell { display: flex; align-items: center; gap: 6px; }
+.cdr-range-input { width: 56px; }
+.cdr-range-input.cdr-edited { border-color: var(--accent); color: var(--accent); }
+.btn-icon {
+  background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 6px; width: 24px; height: 24px; line-height: 1; cursor: pointer; font-size: 13px;
+}
+.btn-icon:hover { color: var(--text); border-color: var(--accent); }
+.section-hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
 .status-pass { color: var(--ok); font-weight: 700; }
 .status-fail { color: var(--error); font-weight: 700; }
 
