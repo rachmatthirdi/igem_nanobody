@@ -1,0 +1,8 @@
+node_modules
+work
+cache
+output
+projects
+.git
+.trunk
+*.log

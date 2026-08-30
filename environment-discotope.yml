@@ -2,13 +2,16 @@
 # After this env is created, the setup script installs DiscoTope-3.0 itself
 # from its own requirements.txt (its exact pinned versions), since those are
 # the source of truth, not this file.
+---
 name: discotope
 channels:
   - pytorch
   - nvidia
   - conda-forge
 dependencies:
-  - python=3.10
+  # DiscoTope-3.0's own requirements.txt pins biotite==1.6.*, which needs
+  # Python >=3.11
+  - python=3.11
   - pip
   - pytorch
   - pytorch-cuda=12.1

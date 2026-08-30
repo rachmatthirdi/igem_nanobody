@@ -16,7 +16,7 @@ export class Viewer3D {
     this._blobUrl = null;
     this._onResidueClick = null;
 
-    container.addEventListener('PDB.molstar.click', (e) => {
+    container.addEventListener("PDB.molstar.click", (e) => {
       const d = e.eventData;
       if (!this._onResidueClick || !d) return;
       if (d.auth_asym_id === undefined || d.auth_seq_id === undefined) return;
@@ -29,7 +29,9 @@ export class Viewer3D {
   }
 
   loadPdb(pdbText) {
-    const blobUrl = URL.createObjectURL(new Blob([pdbText], { type: 'chemical/x-pdb' }));
+    const blobUrl = URL.createObjectURL(
+      new Blob([pdbText], { type: "chemical/x-pdb" }),
+    );
     const prevBlobUrl = this._blobUrl;
     this._blobUrl = blobUrl;
 
@@ -37,13 +39,17 @@ export class Viewer3D {
       if (!this._plugin) {
         this._plugin = new window.PDBeMolstarPlugin();
         await this._plugin.render(this.container, {
-          customData: { url: blobUrl, format: 'pdb', binary: false },
+          customData: { url: blobUrl, format: "pdb", binary: false },
           bgColor: { r: 5, g: 7, b: 10 },
           hideControls: true,
-          hideCanvasControls: ['expand'],
+          hideCanvasControls: ["expand"],
         });
       } else {
-        await this._plugin.load({ url: blobUrl, format: 'pdb', isBinary: false });
+        await this._plugin.load({
+          url: blobUrl,
+          format: "pdb",
+          isBinary: false,
+        });
       }
       if (prevBlobUrl) URL.revokeObjectURL(prevBlobUrl);
     });
@@ -58,11 +64,16 @@ export class Viewer3D {
         return;
       }
       await this._plugin.visual.select({
-        data: resNums.map((resNum) => ({ auth_asym_id: chain, auth_seq_id: resNum, color: '#ffffff', focus: false })),
+        data: resNums.map((resNum) => ({
+          auth_asym_id: chain,
+          auth_seq_id: resNum,
+          color: "#ffffff",
+          focus: false,
+        })),
       });
     });
   }
 }
 
 window.Viewer3D = Viewer3D;
-window.dispatchEvent(new Event('viewer3d-ready'));
+window.dispatchEvent(new Event("viewer3d-ready"));
