@@ -103,13 +103,38 @@ const RF2_WEIGHT_PATH = path.join(DIRS.cacheWeights, "RF2_ab.pt");
 async function ensureRf2Weights() {
   if (fs.existsSync(RF2_WEIGHT_PATH)) return;
   sendProgress("rf2-weights", 0, "running", "Downloading RF2 weights...");
-  await downloadFileWithProgress(
-    RF2_WEIGHT_URL,
-    RF2_WEIGHT_PATH,
-    "rf2-weights",
-    "RF2 weights",
-  );
-  sendProgress("rf2-weights", 100, "done", "RF2 weights downloaded.");
+  // files.ipd.uw.edu has real, observed transient DNS/connectivity blips
+  // (hit one live during testing: getaddrinfo EAI_AGAIN) - docker/Dockerfile
+  // retries its curl calls to the same host for the same reason; this needed
+  // the same treatment rather than failing the whole design run on one blip.
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await downloadFileWithProgress(
+        RF2_WEIGHT_URL,
+        RF2_WEIGHT_PATH,
+        "rf2-weights",
+        "RF2 weights",
+      );
+      sendProgress("rf2-weights", 100, "done", "RF2 weights downloaded.");
+      return;
+    } catch (e) {
+      if (attempt === maxAttempts) throw e;
+      const delaySec = attempt * 10;
+      sendLog(
+        "warn",
+        `RF2 weight download failed (attempt ${attempt}/${maxAttempts}): ${e.message}. Retrying in ${delaySec}s...`,
+        "rf2-weights",
+      );
+      sendProgress(
+        "rf2-weights",
+        0,
+        "running",
+        `Download failed, retrying in ${delaySec}s (attempt ${attempt}/${maxAttempts})...`,
+      );
+      await new Promise((r) => setTimeout(r, delaySec * 1000));
+    }
+  }
 }
 
 // Set once by the check-gpu handler; gates whether `--gpus all` is passed to
