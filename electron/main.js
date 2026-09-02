@@ -129,6 +129,24 @@ async function withRetry(fn, { maxAttempts = 5, stage, what }) {
   }
 }
 
+// Same transient-failure class applies to the small JSON/FASTA lookups
+// (RCSB, InterPro, UniProt) - a dropped connection shouldn't fail the whole
+// pipeline. Only retries connection-level errors and 5xx (may recover); a
+// 4xx (e.g. a mistyped PDB ID) is not transient, so it fails immediately
+// instead of making the user wait through backoff for a typo.
+async function fetchWithRetry(url, opts, { stage, what }) {
+  return withRetry(
+    async () => {
+      const res = await fetch(url, opts);
+      if (!res.ok && res.status >= 500) {
+        throw new Error(`${what} returned status ${res.status}`);
+      }
+      return res;
+    },
+    { stage, what },
+  );
+}
+
 async function ensureRf2Weights() {
   if (fs.existsSync(RF2_WEIGHT_PATH)) return;
   sendProgress("rf2-weights", 0, "running", "Downloading RF2 weights...");
@@ -670,7 +688,10 @@ ipcMain.handle("fetch-pdb", async (_evt, pdbId) => {
     sendLog("info", `${id}.pdb found in local cache.`, "download-pdb");
   } else {
     const url = `https://files.rcsb.org/download/${id}.pdb`;
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url, undefined, {
+      stage: "download-pdb",
+      what: `RCSB PDB download for "${id}"`,
+    });
     if (!res.ok)
       throw new Error(`RCSB returned status ${res.status} for PDB ID "${id}"`);
     pdbText = await res.text();
@@ -741,7 +762,10 @@ ipcMain.handle("run-interpro", async (_evt, { pdbId, forceRefresh }) => {
   const url = `https://www.ebi.ac.uk/interpro/api/entry/interpro/structure/pdb/${id}`;
   let domains = [];
   try {
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url, undefined, {
+      stage: "interpro",
+      what: "InterPro API",
+    });
     if (!res.ok) throw new Error(`InterPro API status ${res.status}`);
     const data = await res.json();
     domains = (data.results || []).map((r) => {
@@ -1128,9 +1152,11 @@ const UNIPROT_ACCESSIONS = {
   pelb: { primary: "Q04085", label: "PelB signal peptide (pectate lyase B)" },
 };
 
-async function fetchUniprotFasta(accession) {
-  const res = await fetch(
+async function fetchUniprotFasta(accession, stage = "anchor-fetch") {
+  const res = await fetchWithRetry(
     `https://rest.uniprot.org/uniprotkb/${accession}.fasta`,
+    undefined,
+    { stage, what: `UniProt fetch (${accession})` },
   );
   if (!res.ok) throw new Error(`UniProt status ${res.status} for ${accession}`);
   const text = await res.text();
@@ -1241,6 +1267,7 @@ ipcMain.handle("build-plasmid", async (_evt, params) => {
     try {
       const { sequence } = await fetchUniprotFasta(
         UNIPROT_ACCESSIONS.pelb.primary,
+        "plasmid",
       );
       pelbAminoAcidSeq = sequence;
     } catch (e) {
