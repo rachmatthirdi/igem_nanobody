@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("api", {
   getSettings: invoke("get-settings"),
   saveSettings: invoke("save-settings"),
   checkDocker: invoke("check-docker"),
+  pullDockerImage: invoke("pull-docker-image"),
   runDockerBuild: invoke("run-docker-build"),
   testGpuDocker: invoke("test-gpu-docker"),
 

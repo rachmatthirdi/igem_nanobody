@@ -254,12 +254,14 @@
       window.AppState.seqDir = mpnn.seqDir;
       setBadge("badge-proteinmpnn", "Done", "badge-ok");
 
+      setBadge("badge-rf2-weights", "Running...", "badge-running");
       setBadge("badge-rf2", "Running...", "badge-running");
       const rf2 = await window.api.runRf2({
         seqDir: mpnn.seqDir,
         numRecycles: 10,
       });
       window.AppState.rf2OutDir = rf2.rf2OutDir;
+      setBadge("badge-rf2-weights", "Done", "badge-ok");
       setBadge("badge-rf2", "Done", "badge-ok");
 
       const scoring = await window.api.scoreCandidates({
@@ -281,7 +283,12 @@
         `Pipeline failed: ${e.message}`,
         "design",
       );
-      ["badge-rfdiffusion", "badge-proteinmpnn", "badge-rf2"].forEach((id) => {
+      [
+        "badge-rfdiffusion",
+        "badge-proteinmpnn",
+        "badge-rf2-weights",
+        "badge-rf2",
+      ].forEach((id) => {
         if ($(id).textContent.includes("Running"))
           setBadge(id, "Failed", "badge-error");
       });

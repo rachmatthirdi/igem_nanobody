@@ -45,7 +45,30 @@ RUN git clone --depth 1 https://github.com/Magnushhoie/DiscoTope-3.0.git DiscoTo
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN git clone --depth 1 https://github.com/RosettaCommons/RFantibody.git RFantibody
 WORKDIR /opt/tools/RFantibody
-RUN bash include/download_weights.sh && uv sync
+
+# RF2_ab.pt (RoseTTAFold2's antibody-finetuned weights) is licensed under
+# Rosetta-DL's Non-Commercial terms, which forbid the software being
+# "published, distributed, or otherwise transferred" outside the licensee's
+# own institution - so it can't be baked into an image meant for a public
+# registry, unlike RFdiffusion_Ab.pt (BSD) and ProteinMPNN's weights (MIT)
+# below. The app downloads its own copy of RF2_ab.pt at runtime instead
+# (see ensureRf2Weights() in electron/main.js) and bind-mounts it into the
+# container at weights/RF2_ab.pt - each install fetches directly from the
+# same official source, same as building this image does for the rest.
+#
+# Downloaded here rather than via RFantibody's own include/download_weights.sh
+# both to skip just this one file and to add retries: that script uses plain
+# wget with no --retry/resume, so a single transient failure kills the whole
+# build.
+RUN mkdir -p weights && cd weights \
+    && curl -fSL --retry 10 --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o RFdiffusion_Ab.pt \
+       https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt \
+    && curl -fSL --retry 10 --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o ProteinMPNN_v48_noise_0.2.pt \
+       https://files.ipd.uw.edu/pub/RFantibody/ProteinMPNN_v48_noise_0.2.pt \
+    && curl -fSL --retry 10 --retry-delay 15 --retry-max-time 600 --connect-timeout 20 \
+       -o RFab_noframework-nosidechains-5-10-23_trainingparamsadded.pt \
+       "https://zenodo.org/records/17488258/files/RFab_noframework-nosidechains-5-10-23_trainingparamsadded.pt?download=1"
+RUN uv sync
 
 WORKDIR /workspace
 HEALTHCHECK NONE

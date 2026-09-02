@@ -459,6 +459,24 @@
                   </div>
                   <div class="progress-status" id="pg-proteinmpnn-status"></div>
                 </div>
+                <div class="pipeline-stage" id="stage-rf2-weights">
+                  <div class="pipeline-stage-header">
+                    <span>⬇️ RF2 weights (first run only)</span>
+                    <span id="badge-rf2-weights" class="badge badge-muted"
+                      >Waiting</span
+                    >
+                  </div>
+                  <div class="progress-bar">
+                    <div id="pg-rf2-weights" class="progress-fill"></div>
+                  </div>
+                  <div class="progress-status" id="pg-rf2-weights-status"></div>
+                  <div class="section-hint">
+                    Downloaded directly from the official University of
+                    Washington server on first use - this file's license doesn't
+                    allow us to bundle it into the app, so each install fetches
+                    its own copy (~281 MB, cached after the first design).
+                  </div>
+                </div>
                 <div class="pipeline-stage">
                   <div class="pipeline-stage-header">
                     <span>🔬 RF2</span>
@@ -859,9 +877,19 @@
           <div class="form-row">
             <label>Docker tools image</label>
             <button id="btn-build-docker" class="btn btn-secondary">
-              Build Docker image
+              Download tools image
             </button>
             <span id="docker-build-status" style="margin-left: 8px"></span>
+          </div>
+          <div class="section-hint">
+            Downloads the pre-built image from Docker Hub (fast, no compiling -
+            recommended for almost everyone). Modified
+            <code>docker/Dockerfile</code> yourself, or would rather build from
+            source?
+            <button type="button" id="btn-build-docker-source" class="btn-link">
+              Build from source instead
+            </button>
+            (slower, ~20-30 min).
           </div>
           <div class="modal-actions">
             <button id="btn-settings-save" class="btn btn-primary">Save</button>

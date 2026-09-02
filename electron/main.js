@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const { spawn, spawnSync } = require("child_process");
 
 // On native Wayland sessions, Chromium's default wayland ozone backend can
@@ -25,6 +27,7 @@ const DIRS = {
   cachePdb: path.join(ROOT, "cache", "pdb"),
   cacheInterpro: path.join(ROOT, "cache", "interpro"),
   cacheAnchors: path.join(ROOT, "cache", "anchors"),
+  cacheWeights: path.join(ROOT, "cache", "weights"), // model weights the app fetches itself (licenses that forbid redistribution)
   projects: path.join(ROOT, "projects"),
   output: path.join(ROOT, "output"),
   python: path.join(ROOT, "python"),
@@ -70,7 +73,7 @@ const PLATFORM_INFO = detectPlatformInfo();
 // ---------------------------------------------------------------------------
 const DEFAULT_SETTINGS = {
   installMode: "", // '' (Docker image not built yet) | 'docker' - Docker is the only execution path
-  dockerImage: "nanobody-designer-tools",
+  dockerImage: "rachmatthirdi/igem_brawijaya:latest",
   caiOrganism: "Escherichia coli general",
   gpuOverride: "auto", // 'auto' | 'on' | 'off' - manual escape hatch for when
   // auto-detection gets it wrong (e.g. nvidia-smi present but the check fails
@@ -85,7 +88,29 @@ const DISCOTOPE_ENV = "discotope";
 const DOCKER_TOOL_PATHS = {
   discotopeRepoDir: "/opt/tools/DiscoTope-3.0",
   rfantibodyDir: "/opt/tools/RFantibody",
+  rf2WeightPath: "/opt/tools/RFantibody/weights/RF2_ab.pt",
 };
+
+// RF2's weights are Rosetta-DL licensed (non-commercial, no redistribution
+// by licensees) - unlike RFdiffusion/ProteinMPNN's weights, we can't bundle
+// this into a published image. Each install fetches its own copy here and
+// it gets bind-mounted into the container at the path RF2 already expects,
+// which also makes this the one weight file safe to skip baking into any
+// image meant for a public registry.
+const RF2_WEIGHT_URL = "https://files.ipd.uw.edu/pub/RFantibody/RF2_ab.pt";
+const RF2_WEIGHT_PATH = path.join(DIRS.cacheWeights, "RF2_ab.pt");
+
+async function ensureRf2Weights() {
+  if (fs.existsSync(RF2_WEIGHT_PATH)) return;
+  sendProgress("rf2-weights", 0, "running", "Downloading RF2 weights...");
+  await downloadFileWithProgress(
+    RF2_WEIGHT_URL,
+    RF2_WEIGHT_PATH,
+    "rf2-weights",
+    "RF2 weights",
+  );
+  sendProgress("rf2-weights", 100, "done", "RF2 weights downloaded.");
+}
 
 // Set once by the check-gpu handler; gates whether `--gpus all` is passed to
 // `docker run` so Docker mode doesn't hard-fail on machines without
@@ -214,6 +239,169 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Real byte-level progress for Docker pulls and standalone file downloads
+// ---------------------------------------------------------------------------
+function formatEta(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
+function formatMB(bytes) {
+  return (bytes / 1e6).toFixed(1);
+}
+
+// Pulls via the Docker Engine API (not the `docker` CLI) so we get real
+// per-layer byte counts to aggregate into one overall percentage - the CLI's
+// own multi-line progress output is meant for terminal rendering, not
+// machine parsing, and doesn't expose stable byte totals.
+function pullDockerImageWithProgress(imageRef, stage) {
+  return new Promise((resolve, reject) => {
+    const lastColon = imageRef.lastIndexOf(":");
+    const hasTag = lastColon > imageRef.lastIndexOf("/");
+    const fromImage = hasTag ? imageRef.slice(0, lastColon) : imageRef;
+    const tag = hasTag ? imageRef.slice(lastColon + 1) : "latest";
+
+    const req = http.request(
+      {
+        socketPath: "/var/run/docker.sock",
+        path: `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
+        method: "POST",
+      },
+      (res) => {
+        let buf = "";
+        const layers = new Map();
+        const startedAt = Date.now();
+        let lastEmit = 0;
+        let sawError = null;
+
+        res.on("data", (chunk) => {
+          buf += chunk.toString();
+          let idx;
+          while ((idx = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg;
+            try {
+              msg = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (msg.error) {
+              sawError = msg.error;
+              continue;
+            }
+            if (
+              msg.id &&
+              msg.progressDetail &&
+              typeof msg.progressDetail.total === "number" &&
+              msg.progressDetail.total > 0
+            ) {
+              layers.set(msg.id, {
+                current: msg.progressDetail.current,
+                total: msg.progressDetail.total,
+              });
+              const now = Date.now();
+              if (now - lastEmit < 400) continue;
+              lastEmit = now;
+              let cur = 0,
+                tot = 0;
+              for (const v of layers.values()) {
+                cur += v.current;
+                tot += v.total;
+              }
+              const elapsed = (now - startedAt) / 1000;
+              const rate = cur / elapsed;
+              const eta = rate > 0 ? (tot - cur) / rate : NaN;
+              const percent = Math.min(99, (cur / tot) * 100);
+              sendProgress(
+                stage,
+                percent,
+                "running",
+                `Pulling image: ${percent.toFixed(0)}% (${formatMB(cur)}MB/${formatMB(tot)}MB)` +
+                  (isFinite(eta) ? ` — ${formatEta(eta)} remaining` : ""),
+              );
+            } else if (msg.status) {
+              sendLog(
+                "info",
+                msg.status + (msg.id ? ` ${msg.id}` : ""),
+                "docker-pull",
+              );
+            }
+          }
+        });
+
+        res.on("end", () => {
+          if (sawError) reject(new Error(sawError));
+          else resolve();
+        });
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// Downloads a single file with real byte-level progress (Content-Length
+// based). Used for weight files whose license permits users fetching their
+// own copy but forbids us pre-bundling it into a published image.
+function downloadFileWithProgress(url, destPath, stage, label) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    const tmpPath = `${destPath}.part`;
+    const file = fs.createWriteStream(tmpPath);
+    const startedAt = Date.now();
+    let lastEmit = 0;
+
+    https
+      .get(url, (res) => {
+        if (res.statusCode !== 200) {
+          file.close();
+          fs.unlink(tmpPath, () => {});
+          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+          return;
+        }
+        const total = parseInt(res.headers["content-length"], 10) || 0;
+        let received = 0;
+        res.on("data", (chunk) => {
+          received += chunk.length;
+          const now = Date.now();
+          if (now - lastEmit < 400) return;
+          lastEmit = now;
+          const elapsed = (now - startedAt) / 1000;
+          const rate = received / elapsed;
+          const eta = rate > 0 && total > 0 ? (total - received) / rate : NaN;
+          const percent =
+            total > 0 ? Math.min(99, (received / total) * 100) : 0;
+          sendProgress(
+            stage,
+            percent,
+            "running",
+            `Downloading ${label}: ${percent.toFixed(0)}% (${formatMB(received)}MB/${formatMB(total)}MB)` +
+              (isFinite(eta) ? ` — ${formatEta(eta)} remaining` : ""),
+          );
+        });
+        res.pipe(file);
+        file.on("finish", () => {
+          file.close(() => {
+            fs.renameSync(tmpPath, destPath);
+            resolve();
+          });
+        });
+      })
+      .on("error", (e) => {
+        file.close();
+        fs.unlink(tmpPath, () => {});
+        reject(e);
+      });
+  });
+}
+
 const DOCKER_NOT_READY_MSG =
   'The Docker image isn\'t built yet. Open Settings and click "Build Docker image" (or use the install prompt on launch).';
 
@@ -255,10 +443,11 @@ function runCondaPython(envName, scriptPath, args, opts = {}) {
 
 // Runs a shell command line inside the RFantibody checkout baked into the
 // Docker image (uv-managed venv, e.g. `uv run rfdiffusion ...`).
-function runRfantibodyCommand(commandLine, source) {
+function runRfantibodyCommand(commandLine, source, extraMounts = []) {
   const settings = requireDocker();
   const rfantibodyDir = DOCKER_TOOL_PATHS.rfantibodyDir;
   const gpuFlags = GPU_AVAILABLE ? ["--gpus", "all"] : [];
+  const mountFlags = extraMounts.flatMap((m) => ["-v", m]);
   const full = `cd '${rfantibodyDir}' && ${commandLine}`;
   // ROOT is mounted so output paths under DIRS.work (which live under ROOT,
   // not rfantibodyDir) are visible inside the container too.
@@ -270,6 +459,7 @@ function runRfantibodyCommand(commandLine, source) {
       ...gpuFlags,
       "-v",
       `${ROOT}:${ROOT}`,
+      ...mountFlags,
       "-w",
       rfantibodyDir,
       settings.dockerImage,
@@ -743,6 +933,7 @@ ipcMain.handle("run-proteinmpnn", async (_evt, params) => {
 
 ipcMain.handle("run-rf2", async (_evt, params) => {
   const { seqDir, numRecycles } = params;
+  await ensureRf2Weights();
   sendProgress("rf2", 10, "running", "Running RF2 (RoseTTAFold2)...");
   const outDir = path.join("work", `rf2_out_${Date.now()}`);
   const outDirAbs = path.join(ROOT, outDir);
@@ -751,6 +942,7 @@ ipcMain.handle("run-rf2", async (_evt, params) => {
   const { stdout } = await runRfantibodyCommand(
     `uv run rf2 -i '${seqDir}' -o '${outDirAbs}' -r ${numRecycles || 10}`,
     "rf2",
+    [`${RF2_WEIGHT_PATH}:${DOCKER_TOOL_PATHS.rf2WeightPath}:ro`],
   );
 
   // RF2 only reports pLDDT on stdout ("Completed: <stem> - Best pLDDT: X") -
@@ -1156,6 +1348,24 @@ ipcMain.handle("test-gpu-docker", async () => {
   return { success: true, message: res.stdout.trim() };
 });
 
+// Pulls the pre-built image from Docker Hub - the default, recommended path
+// for most users, since it skips the ~20-30 min local build (conda solves,
+// weight downloads, uv sync) entirely. Doesn't include RF2_ab.pt (see the
+// Dockerfile's note on why); ensureRf2Weights() fetches that separately on
+// first use of the Design pipeline.
+ipcMain.handle("pull-docker-image", async () => {
+  const settings = getSettings();
+  sendProgress("install", 0, "running", "Pulling Docker image...");
+  await pullDockerImageWithProgress(settings.dockerImage, "install");
+  saveSettingsToDisk({ installMode: "docker" });
+  sendProgress("install", 100, "done", "Docker image ready.");
+  return getSettings();
+});
+
+// Builds from the local Dockerfile instead of pulling - for anyone who's
+// modified docker/Dockerfile, or would rather build from source than trust
+// a prebuilt image. Not exposed as the primary Settings button (that's
+// pull-docker-image above); kept available for that case.
 ipcMain.handle("run-docker-build", async () => {
   const settings = getSettings();
   sendProgress("install", 10, "running", "Building Docker image...");

@@ -152,10 +152,36 @@
       const btn = $("btn-build-docker");
       const status = $("docker-build-status");
       btn.disabled = true;
+      status.textContent = "Downloading... see Live Console for progress.";
+      window.ConsolePanel.log(
+        "info",
+        "Downloading the pre-built tools image from Docker Hub.",
+        "install",
+      );
+      try {
+        await window.api.pullDockerImage();
+        status.textContent = "✓ Tools image ready.";
+        window.ConsolePanel.log("ok", "Tools image downloaded.", "install");
+        refreshMonitorSettings();
+      } catch (e) {
+        status.textContent = "✗ Download failed.";
+        window.ConsolePanel.log(
+          "error",
+          `Docker pull failed: ${e.message}`,
+          "install",
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    $("btn-build-docker-source").addEventListener("click", async () => {
+      const btn = $("btn-build-docker-source");
+      const status = $("docker-build-status");
+      btn.disabled = true;
       status.textContent = "Building... see Live Console for progress.";
       window.ConsolePanel.log(
         "info",
-        "Starting Docker image build (this can take a while on first run).",
+        "Building the tools image from source (this can take 20-30 min).",
         "install",
       );
       try {

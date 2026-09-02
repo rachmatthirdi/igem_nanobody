@@ -28,6 +28,12 @@ native/conda fallback: Docker is what pins every one of these tools to
 exact, tested versions instead of letting each machine's own conda/pip
 solve drift out from under you.
 
+RF2's weights specifically aren't in the Docker image (its license doesn't
+allow redistributing them - see [Settings](#settings)); the app downloads
+that one file itself (~281 MB) the first time you run the Design pipeline,
+straight from the official source. Everything else needed for the AI
+Design pipeline is already in the image.
+
 ## Prerequisites
 
 - **Node.js** — v18 or newer (tested with v24). `npm` comes with it.
@@ -37,9 +43,9 @@ solve drift out from under you.
   [Install Docker](https://docs.docker.com/get-docker/) (Docker Desktop on
   macOS/Windows, Docker Engine on Linux) with the daemon running.
 - **Internet access** — `npm install` downloads Electron's ~200 MB binary;
-  the Docker build downloads Miniconda, clones DiscoTope-3.0/RFantibody,
-  and pulls RFantibody's model weights (several GB) — a one-time cost
-  cached in Docker's image layers.
+  getting the tools image downloads ~19 GB from Docker Hub (one-time,
+  cached locally after that), plus a ~281 MB RF2 weight file on first
+  Design pipeline run.
 - **NVIDIA GPU + CUDA** — optional but strongly recommended, plus
   [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
   on Linux for GPU passthrough into the container. RFdiffusion,
@@ -52,8 +58,8 @@ solve drift out from under you.
   CPU-only there.
 
 You do **not** need Python or conda installed on your system directly —
-everything runs inside the one Docker image, built once from
-`docker/Dockerfile`.
+everything runs inside the one Docker image, downloaded once from Docker
+Hub (or built locally from `docker/Dockerfile`, if you prefer).
 
 ## 1. Clone and install the app
 
@@ -68,23 +74,33 @@ npm start
 the `5M13` quick example) — it needs nothing beyond what you just
 installed.
 
-## 2. Build the Docker image
+## 2. Get the tools image
 
 On first launch, the app detects whether Docker is available and shows an
-**"Install external tools"** dialog with a single **Build Docker image**
-button — no terminal required. It builds `docker/Dockerfile` (Miniconda +
-both conda environments + DiscoTope-3.0 + RFantibody, all pinned),
-streaming progress into the Live Console at the bottom of the window. If
-Docker isn't found, the dialog links to Docker's install page instead;
-"Skip for now" leaves the Target tab usable in the meantime.
+**"Install external tools"** dialog with a **Download tools image**
+button — no terminal required. It pulls the pre-built image from Docker
+Hub (`rachmatthirdi/igem_brawijaya`), streaming progress (with a real
+byte-level percentage and time estimate) into the Live Console. If Docker
+isn't found, the dialog links to Docker's install page instead; "Skip for
+now" leaves the Target tab usable in the meantime.
 
-You can re-run the build any time from Settings (⚙️) → **Re-run Docker
-build** — useful after pulling repo updates that touch the Dockerfile.
+You can re-run this any time from Settings (⚙️) → **Download tools
+image**.
 
 Equivalent from a terminal:
 
 ```bash
-docker build -f docker/Dockerfile -t nanobody-designer-tools .
+docker pull rachmatthirdi/igem_brawijaya:latest
+```
+
+### Building from source instead
+
+If you've modified `docker/Dockerfile` yourself, or would rather build
+from source than trust a prebuilt image, Settings also has a **Build from
+source instead** link, or from a terminal:
+
+```bash
+docker build -f docker/Dockerfile -t rachmatthirdi/igem_brawijaya:latest .
 ```
 
 What it does, step by step:
@@ -103,8 +119,9 @@ What it does, step by step:
 6. Installs [`uv`](https://astral.sh/uv) (Astral's Python package
    manager, needed by RFantibody), clones
    [RFantibody](https://github.com/RosettaCommons/RFantibody), downloads
-   its model weights, and runs `uv sync` to build its virtual
-   environment.
+   RFdiffusion's and ProteinMPNN's model weights, and runs `uv sync` to
+   build its virtual environment. **RF2's weights are deliberately not
+   downloaded here** — see below.
 
 This takes a while the first time (weight downloads alone are several
 GB); Docker's layer cache makes re-builds after small changes fast.
@@ -116,10 +133,25 @@ their own CUDA runtime, so the container only needs the NVIDIA **driver**
 passed through at `docker run` time, not a matching system CUDA toolkit
 baked into the image.
 
+### Why RF2's weights aren't in the image
+
+RFdiffusion's and ProteinMPNN's weights are BSD/MIT-licensed and fine to
+redistribute. RF2 (RoseTTAFold2)'s antibody-finetuned weights
+(`RF2_ab.pt`), however, are licensed under the
+[Rosetta-DL Non-Commercial license](https://github.com/RosettaCommons/Rosetta-DL/blob/main/LICENSE.md),
+which forbids the software being "published, distributed, or otherwise
+transferred" outside the licensee's own institution — so it can't be
+baked into an image published to a public registry, even for
+non-commercial use. Each install fetches its own copy instead, directly
+from the same official University of Washington server the Dockerfile
+uses for the others, the first time you run the Design pipeline. It's
+cached after that and bind-mounted into the container automatically -
+nothing to configure.
+
 ## 3. Verify it worked
 
 - **System Monitor** sidebar should show "Docker tools: ✓
-  nanobody-designer-tools" once the build finishes.
+  rachmatthirdi/igem_brawijaya" once the download finishes.
 - **Target tab**: analyze a PDB ID (e.g. `1CRN`) — FreeSASA and
   DiscoTope-3.0 progress bars should complete instead of showing a
   warning.
@@ -131,8 +163,13 @@ baked into the image.
 
 Open **Settings** (⚙️ in the header):
 
-- **Docker image tag** — Defaults to `nanobody-designer-tools`; change
-  only if you built/tagged the image under another name.
+- **Docker image tag** — Defaults to `rachmatthirdi/igem_brawijaya:latest`;
+  change only if you built/tagged the image under another name.
+- **GPU detection** — Auto-detect (default), or force GPU on/off manually
+  if auto-detection gets it wrong. A **Test GPU access** button in the
+  same section actually runs a small `docker --gpus all` container to
+  verify Docker can really reach your GPU, rather than just trusting the
+  override.
 
 Settings are saved locally and persist across restarts.
 
@@ -147,7 +184,8 @@ python/         FreeSASA, CAI, codon optimization, scoring, anchor/plasmid
                 builder (run inside Docker)
 docker/         Dockerfile (combined tools image: conda envs +
                 DiscoTope-3.0 + RFantibody)
-cache/          fetched PDB/InterPro/anchor data (offline-first)
+cache/          fetched PDB/InterPro/anchor data (offline-first), plus
+                weights/ (RF2_ab.pt, downloaded on first Design tab run)
 projects/       saved projects (JSON)
 output/         final FASTA ready for synthesis
 work/           pipeline scratch files (created automatically)
@@ -157,15 +195,26 @@ work/           pipeline scratch files (created automatically)
 
 - **"The Docker image isn't built yet" error** on
   Target/Design/Screening/Construct actions — open Settings and click
-  "Re-run Docker build" (or use the install prompt shown on first
+  "Download tools image" (or use the install prompt shown on first
   launch).
+- **Docker pull fails or is slow** — Docker Hub itself is generally
+  reliable, but if it fails partway, just click "Download tools image"
+  again; Docker resumes from whichever layers already finished.
+- **RF2 weight download fails on first Design run** — it's fetched
+  directly from a University of Washington file server
+  (`files.ipd.uw.edu`), which occasionally has brief outages. Just retry
+  the pipeline; partial downloads aren't left behind (the failed file
+  isn't renamed into place, so a retry redownloads cleanly rather than
+  loading a truncated weight file).
 - **Docker build fails on `conda env create` with a Terms of Service
-  error** — recent conda releases gate the `defaults` channels behind an
-  explicit ToS acceptance; `docker/Dockerfile` already runs
-  `conda tos accept` for both channels right after installing Miniconda,
-  so this should only surface if you're building a modified Dockerfile
-  that skips that step.
+  error** (only applies if building from source) — recent conda releases
+  gate the `defaults` channels behind an explicit ToS acceptance;
+  `docker/Dockerfile` already runs `conda tos accept` for both channels
+  right after installing Miniconda, so this should only surface if you're
+  building a modified Dockerfile that skips that step.
 - **GPU not passed through inside Docker on Linux** — install
-  [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-  and confirm `docker run --rm --gpus all ubuntu nvidia-smi` works
-  outside the app first.
+  [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
+  then use Settings → **Test GPU access** to confirm Docker can reach it
+  (this runs `docker run --rm --gpus all ubuntu:22.04 nvidia-smi` for
+  you). If your GPU is real but still not detected, use the **GPU
+  detection** override in Settings to force it on.
