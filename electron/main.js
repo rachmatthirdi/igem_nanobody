@@ -100,41 +100,49 @@ const DOCKER_TOOL_PATHS = {
 const RF2_WEIGHT_URL = "https://files.ipd.uw.edu/pub/RFantibody/RF2_ab.pt";
 const RF2_WEIGHT_PATH = path.join(DIRS.cacheWeights, "RF2_ab.pt");
 
-async function ensureRf2Weights() {
-  if (fs.existsSync(RF2_WEIGHT_PATH)) return;
-  sendProgress("rf2-weights", 0, "running", "Downloading RF2 weights...");
-  // files.ipd.uw.edu has real, observed transient DNS/connectivity blips
-  // (hit one live during testing: getaddrinfo EAI_AGAIN) - docker/Dockerfile
-  // retries its curl calls to the same host for the same reason; this needed
-  // the same treatment rather than failing the whole design run on one blip.
-  const maxAttempts = 5;
+// Retries a long-running network operation on failure. Both Docker Hub
+// pulls and the RF2 weight download have hit real, observed transient
+// failures live during testing (connection reset, DNS EAI_AGAIN) that
+// otherwise kill a many-minutes-long transfer over one blip - Docker and
+// downloadFileWithProgress both resume/skip already-fetched data on a
+// fresh attempt, so a retry is cheap, not a full restart.
+async function withRetry(fn, { maxAttempts = 5, stage, what }) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await downloadFileWithProgress(
-        RF2_WEIGHT_URL,
-        RF2_WEIGHT_PATH,
-        "rf2-weights",
-        "RF2 weights",
-      );
-      sendProgress("rf2-weights", 100, "done", "RF2 weights downloaded.");
-      return;
+      return await fn();
     } catch (e) {
       if (attempt === maxAttempts) throw e;
       const delaySec = attempt * 10;
       sendLog(
         "warn",
-        `RF2 weight download failed (attempt ${attempt}/${maxAttempts}): ${e.message}. Retrying in ${delaySec}s...`,
-        "rf2-weights",
+        `${what} failed (attempt ${attempt}/${maxAttempts}): ${e.message}. Retrying in ${delaySec}s...`,
+        stage,
       );
       sendProgress(
-        "rf2-weights",
+        stage,
         0,
         "running",
-        `Download failed, retrying in ${delaySec}s (attempt ${attempt}/${maxAttempts})...`,
+        `Failed, retrying in ${delaySec}s (attempt ${attempt}/${maxAttempts})...`,
       );
       await new Promise((r) => setTimeout(r, delaySec * 1000));
     }
   }
+}
+
+async function ensureRf2Weights() {
+  if (fs.existsSync(RF2_WEIGHT_PATH)) return;
+  sendProgress("rf2-weights", 0, "running", "Downloading RF2 weights...");
+  await withRetry(
+    () =>
+      downloadFileWithProgress(
+        RF2_WEIGHT_URL,
+        RF2_WEIGHT_PATH,
+        "rf2-weights",
+        "RF2 weights",
+      ),
+    { stage: "rf2-weights", what: "RF2 weight download" },
+  );
+  sendProgress("rf2-weights", 100, "done", "RF2 weights downloaded.");
 }
 
 // Set once by the check-gpu handler; gates whether `--gpus all` is passed to
@@ -1381,7 +1389,10 @@ ipcMain.handle("test-gpu-docker", async () => {
 ipcMain.handle("pull-docker-image", async () => {
   const settings = getSettings();
   sendProgress("install", 0, "running", "Pulling Docker image...");
-  await pullDockerImageWithProgress(settings.dockerImage, "install");
+  await withRetry(
+    () => pullDockerImageWithProgress(settings.dockerImage, "install"),
+    { stage: "install", what: "Docker image pull" },
+  );
   saveSettingsToDisk({ installMode: "docker" });
   sendProgress("install", 100, "done", "Docker image ready.");
   return getSettings();
