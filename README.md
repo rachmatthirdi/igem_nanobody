@@ -159,6 +159,194 @@ nothing to configure.
   Number and MPNN Designs/backbone to `1` (fastest smoke test) and run
   the pipeline.
 
+## Manual installation (no Docker)
+
+Docker is the tested, recommended path above — it pins every tool to exact
+versions instead of whatever conda/pip resolves on your machine. If you'd
+rather install everything natively yourself (e.g. to avoid the ~19 GB image
+download, or to inspect/debug the tools directly), this section walks
+through the same steps [docker/Dockerfile](docker/Dockerfile) runs,
+adapted per OS.
+
+**Heads up:** the Electron app's Screening/Design/Construct tabs currently
+only launch tools through Docker (`electron/main.js` has no native
+execution path yet). A manual install lets you run
+FreeSASA/DiscoTope-3.0/RFantibody yourself from a terminal, but won't make
+those app tabs work without Docker unless the app is also changed to call
+your local conda envs instead. The **Target** tab needs neither Docker nor
+this section.
+
+Pick your OS below. WSL follows the Ubuntu steps almost exactly; macOS has
+real differences (no CUDA, and RFantibody/RFdiffusion are primarily tested
+on Linux+NVIDIA) called out explicitly.
+
+### Ubuntu / Linux
+
+#### 1. System packages
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl wget unzip build-essential
+```
+
+#### 2. Miniconda
+
+```bash
+curl -fsSL -o /tmp/miniconda.sh \
+  https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash /tmp/miniconda.sh -b -p "$HOME/miniconda3"
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+```
+
+#### 3. The two conda envs
+
+```bash
+cd ~/igem_nanobody   # wherever you cloned this repo
+conda env create -f environment-tools.yml
+conda env create -f environment-discotope.yml
+```
+
+#### 4. DiscoTope-3.0
+
+```bash
+mkdir -p ~/tools && cd ~/tools
+git clone --depth 1 https://github.com/Magnushhoie/DiscoTope-3.0.git
+cd DiscoTope-3.0 && unzip -o models.zip
+conda run -n discotope pip install --no-cache-dir -r requirements.txt
+conda run -n discotope pip install --no-cache-dir -e .
+```
+
+#### 5. uv + RFantibody (RFdiffusion / ProteinMPNN / RF2)
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+cd ~/tools
+git clone --depth 1 https://github.com/RosettaCommons/RFantibody.git
+cd RFantibody && mkdir -p weights && cd weights
+
+curl -fSL --retry 10 --retry-delay 15 -o RFdiffusion_Ab.pt \
+  https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt
+curl -fSL --retry 10 --retry-delay 15 -o ProteinMPNN_v48_noise_0.2.pt \
+  https://files.ipd.uw.edu/pub/RFantibody/ProteinMPNN_v48_noise_0.2.pt
+curl -fSL --retry 10 --retry-delay 15 \
+  -o RFab_noframework-nosidechains-5-10-23_trainingparamsadded.pt \
+  "https://zenodo.org/records/17488258/files/RFab_noframework-nosidechains-5-10-23_trainingparamsadded.pt?download=1"
+
+cd ~/tools/RFantibody
+uv sync
+```
+
+#### 6. RF2 weights
+
+```bash
+mkdir -p ~/igem_nanobody/cache/weights
+curl -fSL --retry 10 --retry-delay 15 \
+  -o ~/igem_nanobody/cache/weights/RF2_ab.pt \
+  https://files.ipd.uw.edu/pub/RFantibody/RF2_ab.pt
+```
+
+#### 7. Run the app
+
+```bash
+cd ~/igem_nanobody
+npm install
+npm start
+```
+
+### WSL (Windows Subsystem for Linux)
+
+WSL runs a real Ubuntu userspace, so the steps are the **Ubuntu / Linux
+section above, run inside your WSL shell**, plus:
+
+1. Install WSL2 and an Ubuntu distro from **Windows PowerShell** (not
+   inside WSL):
+
+   ```powershell
+   wsl --install -d Ubuntu-22.04
+   ```
+
+2. Open the new Ubuntu terminal and follow the whole **Ubuntu / Linux**
+   section above inside it — same commands, same paths, nothing
+   WSL-specific in that part.
+3. **GPU (optional):** install only the regular Windows NVIDIA driver
+   (from nvidia.com) — do *not* install a separate Linux driver inside
+   WSL, it isn't needed and can conflict. WSL passes the Windows driver
+   through automatically. Verify from inside WSL with:
+
+   ```bash
+   nvidia-smi
+   ```
+
+4. **Running the Electron app's window:** on Windows 11, WSLg forwards
+   Linux GUI apps to your desktop automatically — `npm start` just works.
+   On Windows 10, you need a separate X server (e.g. VcXsrv) and
+   `DISPLAY` set manually.
+
+### macOS
+
+macOS has no NVIDIA GPU, so everything here runs CPU-only — RFdiffusion/RF2
+in particular will be much slower than on a CUDA machine (this matches
+what this README already says about Docker Desktop on macOS). More
+importantly, **RFdiffusion/RFantibody are research code primarily built
+and tested on Linux+CUDA** — installing them natively on macOS is not
+verified to work; treat this path as experimental and expect to debug
+dependency issues that don't come up on Linux.
+
+#### 1. Prerequisites
+
+```bash
+xcode-select --install   # Xcode command line tools (git, clang, etc.)
+```
+
+**2. Miniconda** — pick the installer for your chip:
+
+```bash
+# Apple Silicon (M1/M2/M3/M4)
+curl -fsSL -o /tmp/miniconda.sh \
+  https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh
+# Intel Mac
+curl -fsSL -o /tmp/miniconda.sh \
+  https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
+
+bash /tmp/miniconda.sh -b -p "$HOME/miniconda3"
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+```
+
+**3. `nanobody-tools` env** — no CUDA dependency, installs as-is:
+
+```bash
+cd ~/igem_nanobody
+conda env create -f environment-tools.yml
+```
+
+**4. `discotope` env** — `environment-discotope.yml` pins
+`pytorch-cuda=12.1`, which doesn't exist on macOS. Create it manually
+instead, without the `nvidia` channel or the `pytorch-cuda` package:
+
+```bash
+conda create -n discotope -c pytorch -c conda-forge \
+  python=3.11 pytorch numpy pandas pip -y
+```
+
+**5. DiscoTope-3.0, uv/RFantibody, RF2 weights** — same commands as the
+**Ubuntu / Linux** section, steps 4–6. If RFantibody's `uv sync` fails on
+a native macOS dependency, that's the expected risk mentioned above —
+there's currently no macOS-tested fallback for it in this repo.
+
+#### 6. Run the app
+
+```bash
+cd ~/igem_nanobody
+npm install
+npm start
+```
+
 ## Settings
 
 Open **Settings** (⚙️ in the header):
@@ -203,9 +391,11 @@ work/           pipeline scratch files (created automatically)
 - **RF2 weight download fails on first Design run** — it's fetched
   directly from a University of Washington file server
   (`files.ipd.uw.edu`), which occasionally has brief outages. Just retry
-  the pipeline; partial downloads aren't left behind (the failed file
-  isn't renamed into place, so a retry redownloads cleanly rather than
-  loading a truncated weight file).
+  the pipeline. Each attempt restarts the download from the beginning
+  (there's no resume), but the finished size is checked against the
+  server's `Content-Length` before the file is moved into place, so a
+  connection that drops partway is discarded rather than leaving a
+  truncated weight file the app would treat as already downloaded.
 - **Docker build fails on `conda env create` with a Terms of Service
   error** (only applies if building from source) — recent conda releases
   gate the `defaults` channels behind an explicit ToS acceptance;

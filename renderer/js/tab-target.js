@@ -128,7 +128,11 @@
     const [interpro, sasa, disco] = await Promise.allSettled([
       window.api.runInterpro({ pdbId, forceRefresh: false }),
       window.api.runFreesasa({ chainAPath: dl.chainAPath }),
-      window.api.runDiscotope({ chainAPath: dl.chainAPath, pdbId }),
+      window.api.runDiscotope({
+        chainAPath: dl.chainAPath,
+        pdbId,
+        forceRefresh: false,
+      }),
     ]);
 
     window.AppState.domains =

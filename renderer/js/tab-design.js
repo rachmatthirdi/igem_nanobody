@@ -187,8 +187,76 @@
     el.className = `badge ${cls}`;
   }
 
+  const PIPELINE_BADGES = [
+    "badge-rfdiffusion",
+    "badge-proteinmpnn",
+    "badge-rf2-weights",
+    "badge-rf2",
+  ];
+  const PIPELINE_STAGES = ["rfdiffusion", "proteinmpnn", "rf2-weights", "rf2"];
+  let pipelineRunning = false;
+
+  function resetPipelineUi() {
+    PIPELINE_BADGES.forEach((id) => setBadge(id, "Waiting", "badge-muted"));
+    for (const stage of PIPELINE_STAGES) {
+      const bar = $(`pg-${stage}`);
+      if (bar) {
+        bar.style.width = "0%";
+        bar.classList.remove("done", "error");
+      }
+      const status = $(`pg-${stage}-status`);
+      if (status) status.textContent = "";
+    }
+  }
+
+  // Clears the design run without touching the Target tab's work (PDB,
+  // hotspots) or the scaffold - those are inputs to a design, not part of it.
+  async function cancelDesign() {
+    if (pipelineRunning) await window.api.cancelPipeline();
+    const s = window.AppState;
+    s.scaffoldConfig = null;
+    s.backbones = [];
+    s.backboneDir = null;
+    s.targetTPath = null;
+    s.seqDir = null;
+    s.rf2OutDir = null;
+    s.candidates = [];
+    s.selectedCandidateIds = [];
+    // Downstream of the candidates, so no longer valid either.
+    s.constructCandidateId = null;
+    s.constructDna = null;
+    s.constructComponents = null;
+    s.plasmid = null;
+    resetPipelineUi();
+    $("btn-goto-screening").disabled = true;
+    window.TabScreening?.refresh();
+    window.TabConstruct?.refreshCandidateOptions?.();
+    window.ConsolePanel.log(
+      "ok",
+      "Design cancelled. Target selections and scaffold are kept - press Run to design again.",
+      "design",
+    );
+  }
+
   function buildScaffoldConfig() {
-    const cdrConfig = `H1:${$("cdr-h1-len").value},H2:${$("cdr-h2-len").value},H3:${$("cdr-h3-len").value}`;
+    const cdrLengths = Object.fromEntries(
+      ["H1", "H2", "H3"].map((label) => [
+        label,
+        Number($(`cdr-${label.toLowerCase()}-len`).value),
+      ]),
+    );
+    const invalid = Object.entries(cdrLengths).find(
+      ([, length]) => !Number.isInteger(length) || length < 5,
+    );
+    if (invalid) {
+      window.ConsolePanel.log(
+        "error",
+        `${invalid[0]} loop length must be at least 5 residues.`,
+        "design",
+      );
+      return null;
+    }
+    const cdrConfig = `H1:${cdrLengths.H1},H2:${cdrLengths.H2},H3:${cdrLengths.H3}`;
     return {
       scaffold_name: $("scaffold-select").value,
       cdr_designed: ["H1", "H2", "H3"],
@@ -221,8 +289,15 @@
     }
 
     const cfg = buildScaffoldConfig();
+    if (!cfg) return;
     window.AppState.scaffoldConfig = cfg;
+    // Clear any cancel left over from the previous run. The main process keeps
+    // that flag set between stages on purpose, so starting a run is the only
+    // thing allowed to reset it.
+    await window.api.beginPipeline();
+    pipelineRunning = true;
     $("btn-run-pipeline").disabled = true;
+    $("btn-stop-pipeline").disabled = false;
     $("btn-goto-screening").disabled = true;
 
     try {
@@ -277,23 +352,45 @@
       );
       $("btn-goto-screening").disabled = false;
       if (window.TabScreening) window.TabScreening.refresh();
+
+      // Auto-save so a finished design run survives even if the user
+      // forgets to click "Save Project" - reuses the same project id on a
+      // second run in this session instead of piling up duplicates.
+      try {
+        const state = window.StateUtils.serialize();
+        const res = await window.api.saveProject(state);
+        window.AppState.id = res.id;
+        window.ConsolePanel.log(
+          "info",
+          `Design results auto-saved (project ${res.id}).`,
+          "design",
+        );
+      } catch (e) {
+        window.ConsolePanel.log(
+          "warn",
+          `Auto-save failed: ${e.message}`,
+          "design",
+        );
+      }
     } catch (e) {
+      const stopped = e.message === "Cancelled by user.";
       window.ConsolePanel.log(
-        "error",
-        `Pipeline failed: ${e.message}`,
+        stopped ? "warn" : "error",
+        stopped ? "Pipeline stopped by user." : `Pipeline failed: ${e.message}`,
         "design",
       );
-      [
-        "badge-rfdiffusion",
-        "badge-proteinmpnn",
-        "badge-rf2-weights",
-        "badge-rf2",
-      ].forEach((id) => {
+      PIPELINE_BADGES.forEach((id) => {
         if ($(id).textContent.includes("Running"))
-          setBadge(id, "Failed", "badge-error");
+          setBadge(
+            id,
+            stopped ? "Stopped" : "Failed",
+            stopped ? "badge-muted" : "badge-error",
+          );
       });
     } finally {
+      pipelineRunning = false;
       $("btn-run-pipeline").disabled = false;
+      $("btn-stop-pipeline").disabled = true;
     }
   }
 
@@ -317,6 +414,30 @@
       wireCdrRangeEditing();
       updatePipelineEta();
       $("btn-run-pipeline").addEventListener("click", runPipeline);
+      $("btn-stop-pipeline").addEventListener("click", async () => {
+        const res = await window.api.cancelPipeline();
+        // Don't disable the button here. Stop pressed between two stages kills
+        // nothing, and disabling on that click took away the only control that
+        // could stop the stage about to start. The pipeline's own finally
+        // block disables it once the run has actually finished.
+        if (!pipelineRunning) {
+          $("btn-stop-pipeline").disabled = true;
+          window.ConsolePanel.log(
+            "warn",
+            "Nothing was running to stop.",
+            "design",
+          );
+        } else {
+          window.ConsolePanel.log(
+            "warn",
+            res.wasRunning
+              ? "Stopping the current stage..."
+              : "Stop requested - the pipeline will halt before the next stage starts.",
+            "design",
+          );
+        }
+      });
+      $("btn-cancel-design").addEventListener("click", cancelDesign);
       $("btn-goto-screening").addEventListener("click", () =>
         window.App.switchTab("screening"),
       );

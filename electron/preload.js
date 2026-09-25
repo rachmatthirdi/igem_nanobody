@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("api", {
   runProteinMpnn: invoke("run-proteinmpnn"),
   runRf2: invoke("run-rf2"),
   scoreCandidates: invoke("score-candidates"),
+  beginPipeline: invoke("begin-pipeline"),
+  cancelPipeline: invoke("cancel-pipeline"),
 
   // Tab 3 - Screening
   importMetricsDialog: invoke("import-metrics-dialog"),
@@ -42,6 +44,8 @@ contextBridge.exposeInMainWorld("api", {
   saveSettings: invoke("save-settings"),
   checkDocker: invoke("check-docker"),
   pullDockerImage: invoke("pull-docker-image"),
+  cancelDockerPull: invoke("cancel-docker-pull"),
+  getDockerStorageInfo: invoke("get-docker-storage-info"),
   runDockerBuild: invoke("run-docker-build"),
   testGpuDocker: invoke("test-gpu-docker"),
 

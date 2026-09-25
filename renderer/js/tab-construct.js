@@ -92,24 +92,10 @@
           .forEach((c) => c.classList.remove("selected"));
         card.classList.add("selected");
         const anchorKey = card.dataset.anchor; // 'intimin' | 'lpp-ompa'
-
-        if (anchorKey === "intimin") {
-          await fetchAndShowAnchor("intimin");
-        } else {
-          // Lpp-OmpA is a fusion of two source sequences.
-          const lpp = await fetchAnchorRaw("lpp");
-          const ompA = await fetchAnchorRaw("ompA");
-          if (!lpp || !ompA) return;
-          const combined = {
-            type: "lpp-ompa",
-            sequence: lpp.sequence + ompA.sequence,
-            label: "Lpp-OmpA (fusion)",
-            source: `${lpp.source} + ${ompA.source}`,
-            header: `${lpp.header} | ${ompA.header}`,
-          };
-          window.AppState.anchor = combined;
-          showAnchor(combined);
-        }
+        // Both anchors (including Lpp-OmpA, which fuses two source entries)
+        // are assembled in the main process, where each segment's display
+        // domain is defined - see ANCHOR_DEFS in electron/main.js.
+        await fetchAndShowAnchor(anchorKey);
       });
     });
   }
@@ -136,10 +122,45 @@
 
   function showAnchor(anchor) {
     $("anchor-sequence-card").style.display = "";
+    // Spell out which slice of each source entry is in use: the whole point of
+    // these anchors is that they are fragments, and a bare residue count can't
+    // tell a correct 143-aa Lpp-OmpA from a wrong full-length one.
+    const breakdown = (anchor.segments || [])
+      .map(
+        (s) =>
+          `${s.name} ${s.accession} ${s.region[0]}-${s.region[1]} of ${s.fullLength} aa`,
+      )
+      .join("  +  ");
     $("anchor-sequence-meta").textContent =
-      `${anchor.label} — ${anchor.sequence.length} residues — source: ${anchor.source}${anchor.fromCache ? " (cache)" : " (live)"}`;
+      `${anchor.label} — ${anchor.sequence.length} residues` +
+      (breakdown ? ` — ${breakdown}` : "") +
+      `${anchor.fromCache ? " (cache)" : " (live)"}`;
     $("anchor-sequence-view").textContent = anchor.sequence;
     $("btn-build-anchor-construct").disabled = false;
+    syncPelbAvailability();
+  }
+
+  // An anchor that carries its own signal peptide is exported on its own;
+  // adding PelB in front of it puts two signal peptides in tandem, and only
+  // the first gets cleaved. Lock the toggle off rather than letting the user
+  // build a construct the main process would then have to silently override.
+  function syncPelbAvailability() {
+    const chk = $("chk-pelb");
+    if (!chk) return;
+    const anchor = window.AppState.anchor;
+    const native = !!(anchor && anchor.hasNativeSignal);
+    if (native && chk.checked) {
+      chk.checked = false;
+      chk.dispatchEvent(new Event("change"));
+    }
+    chk.disabled = native;
+    const hint = $("pelb-hint");
+    if (hint) {
+      hint.textContent = native
+        ? `Not needed: ${anchor.label} already includes its own native signal peptide.`
+        : "";
+      hint.style.display = native ? "" : "none";
+    }
   }
 
   function refreshCandidateOptions() {
@@ -218,6 +239,7 @@
         constructDna: window.AppState.constructDna,
         vector: $("vector-select").value,
         includePelb: $("chk-pelb").checked,
+        anchorHasNativeSignal: !!window.AppState.anchor?.hasNativeSignal,
         candidateId: window.AppState.constructCandidateId,
         cai: candidate?.cai,
       });
@@ -226,6 +248,29 @@
       $("plasmid-fasta-preview").textContent = result.preview;
       $("plasmid-meta").textContent =
         `Length: ${result.lengthBp} bp | GC%: ${result.gcContent?.toFixed(1)}% | CAI: ${result.cai?.toFixed(3) ?? "-"} | File: ${result.fastaPath}`;
+
+      // Internal NdeI/XhoI sites are the difference between an insert that
+      // drops out of the digest cleanly and one that comes out in pieces, so
+      // report what was re-coded rather than fixing it silently.
+      for (const fix of result.restrictionFixes || []) {
+        window.ConsolePanel.log(
+          "info",
+          `Internal ${fix.enzyme} site at bp ${fix.position + 1} removed: ${fix.from} -> ${fix.to} (${fix.residue}), protein unchanged.`,
+          "construct",
+        );
+      }
+      for (const bad of result.restrictionUnresolved || []) {
+        window.ConsolePanel.log(
+          "error",
+          `Internal ${bad.enzyme} site at bp ${bad.position + 1} could NOT be removed - this insert will not digest cleanly.`,
+          "construct",
+        );
+      }
+      for (const note of result.notes || []) {
+        if (note.startsWith("PelB dilewati"))
+          window.ConsolePanel.log("warn", note, "construct");
+      }
+
       window.ConsolePanel.log(
         "ok",
         `Final FASTA saved: ${result.fastaPath}`,
@@ -256,6 +301,9 @@
     },
     onActivate() {
       refreshCandidateOptions();
+      // A project loaded from disk restores AppState.anchor without going
+      // through showAnchor(), so re-apply the PelB gate on every activation.
+      syncPelbAvailability();
     },
     refreshCandidateOptions,
   };

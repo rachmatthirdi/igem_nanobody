@@ -150,6 +150,13 @@ body {
   font-weight: 600;
   text-align: right;
 }
+.monitor-value-truncate {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
 .pipeline-steps {
   list-style: none;
   margin: 0;
@@ -736,6 +743,13 @@ input[type="range"] {
   font-size: 11px;
   color: var(--text-dim);
   margin-bottom: 8px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 .insert-components {

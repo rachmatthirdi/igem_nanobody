@@ -7,7 +7,7 @@ in.json: { anchor_aa, nanobody_dna, organism }
 import argparse
 import json
 
-from codon_opt_core import optimize_sequence
+from codon_opt_core import optimize_sequence, strip_start_stop
 
 LINKER_AA = "GGGGS" * 3
 
@@ -22,11 +22,17 @@ def main():
         params = json.load(f)
 
     anchor_aa = params["anchor_aa"]
-    nanobody_dna = params["nanobody_dna"].strip().upper()
+    # Phase 7 hands over a complete CDS (ATG ... TGA). Here the nanobody is an
+    # internal segment: its stop codon would terminate translation before the
+    # His-tag build_plasmid.py appends after it, and its ATG is redundant since
+    # the NdeI site (CATATG) already supplies the start codon.
+    nanobody_dna = strip_start_stop(params["nanobody_dna"])
     organism = params.get("organism") or "Escherichia coli general"
 
-    anchor_result = optimize_sequence(anchor_aa, organism)
-    linker_result = optimize_sequence(LINKER_AA, organism)
+    # Both sit upstream of the nanobody in the fusion, so they must not carry
+    # a start or stop codon of their own.
+    anchor_result = optimize_sequence(anchor_aa, organism, add_start_stop=False)
+    linker_result = optimize_sequence(LINKER_AA, organism, add_start_stop=False)
 
     anchor_dna = anchor_result["sequence_dna"]
     linker_dna = linker_result["sequence_dna"]

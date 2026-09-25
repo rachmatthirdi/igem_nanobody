@@ -2,6 +2,8 @@
   function $(id) {
     return document.getElementById(id);
   }
+  let candidateViewer = null;
+  let candidateViewerReady = false;
   const MAX_SELECTED = 3;
 
   const IDEAL = {
@@ -68,6 +70,8 @@
 
     for (const c of candidates) {
       const tr = document.createElement("tr");
+      tr.className = "candidate-row";
+      tr.title = "Click to view this candidate in 3D";
       const checked = window.AppState.selectedCandidateIds.includes(c.id)
         ? "checked"
         : "";
@@ -83,6 +87,10 @@
         <td class="${c.pass ? "status-pass" : "status-fail"}">${c.pass ? "PASS" : "FAIL"}</td>
       `;
       tbody.appendChild(tr);
+      tr.addEventListener("click", (event) => {
+        if (event.target.closest("input")) return;
+        loadCandidateStructure(c);
+      });
     }
 
     tbody.querySelectorAll(".cand-checkbox").forEach((cb) => {
@@ -93,6 +101,33 @@
 
     updateSelectionSummary();
     renderChart(candidates);
+    if (!candidateViewerReady && candidates.length) loadCandidateStructure(candidates[0]);
+  }
+
+  async function loadCandidateStructure(candidate) {
+    const status = $("candidate-viewer-status");
+    if (!candidate?.pdbPath) {
+      status.textContent = "No structure file available for this candidate.";
+      return;
+    }
+    status.textContent = `Loading ${candidate.id}...`;
+    try {
+      if (!candidateViewer) {
+        candidateViewer = new window.Viewer3D($("candidate-viewer-container"));
+      }
+      const pdbText = await window.api.readPdbFile(candidate.pdbPath);
+      await candidateViewer.loadPdb(pdbText);
+      candidateViewerReady = true;
+      $("candidate-viewer-title").textContent = candidate.id;
+      status.textContent = "Structure loaded.";
+    } catch (e) {
+      status.textContent = `Failed to load structure: ${e.message}`;
+      window.ConsolePanel.log(
+        "error",
+        `3D candidate viewer failed: ${e.message}`,
+        "screening",
+      );
+    }
   }
 
   function chartTooltipHtml(c) {
@@ -198,6 +233,53 @@
     }
   }
 
+  async function rescore() {
+    const btn = $("btn-rescore");
+    const { rf2OutDir, backboneDir, scaffold } = window.AppState;
+    if (!rf2OutDir || !backboneDir) {
+      renderTable();
+      window.ConsolePanel.log(
+        "warn",
+        "No RF2 output in this session to re-score — refreshed the table from current data only.",
+        "screening",
+      );
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const scoring = await window.api.scoreCandidates({
+        rf2OutDir,
+        backboneDir,
+        cdr: scaffold?.cdr,
+      });
+      // Scoring only returns the metrics it computes, so merge onto what's
+      // already there - otherwise the fields the Construct tab attaches
+      // (dna/cai/gcContent) would be dropped and its dropdown would empty.
+      const previous = new Map(
+        window.AppState.candidates.map((c) => [c.id, c]),
+      );
+      window.AppState.candidates = (scoring.candidates || []).map((c) => ({
+        ...previous.get(c.id),
+        ...c,
+      }));
+      renderTable();
+      window.TabConstruct?.refreshCandidateOptions?.();
+      window.ConsolePanel.log(
+        "ok",
+        `Re-scored ${window.AppState.candidates.length} candidates.`,
+        "screening",
+      );
+    } catch (e) {
+      window.ConsolePanel.log(
+        "error",
+        `Re-score failed: ${e.message}`,
+        "screening",
+      );
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   function wireImport() {
     $("btn-import-metrics").addEventListener("click", async () => {
       const res = await window.api.importMetricsDialog({
@@ -215,6 +297,18 @@
     init() {
       wireFilters();
       wireImport();
+      $("btn-rescore").addEventListener("click", rescore);
+      $("btn-goto-construct").addEventListener("click", () => {
+        if (!window.AppState.selectedCandidateIds.length) {
+          window.ConsolePanel.log(
+            "warn",
+            "Select at least one candidate before continuing to Construct.",
+            "screening",
+          );
+          return;
+        }
+        window.App.switchTab("construct");
+      });
     },
     refresh() {
       renderTable();

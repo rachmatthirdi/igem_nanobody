@@ -2,6 +2,12 @@
 # After this env is created, the setup script installs DiscoTope-3.0 itself
 # from its own requirements.txt (its exact pinned versions), since those are
 # the source of truth, not this file.
+#
+# Deliberately not pinning pytorch/numpy/pandas here, unlike
+# environment-tools.yml: that later pip step constrains them itself
+# (torch==2.10.*, numpy<=2.4.3, pandas<=3.0.1) and replaces the conda pytorch
+# package outright, so pins here would be overridden - controlled-looking but
+# inert. python and pytorch-cuda are pinned because those this file does own.
 ---
 name: discotope
 channels:

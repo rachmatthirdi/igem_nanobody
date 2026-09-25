@@ -23,7 +23,7 @@ import glob
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - only invoked below via a fixed argv list, see that call site
 
 import numpy as np
 
@@ -88,9 +88,47 @@ def find_plddt_sidecar(rf2_dir, stem):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+    except (OSError, ValueError):
+        # OSError: sidecar vanished/unreadable between the glob() above and
+        # this open(). ValueError (incl. json.JSONDecodeError): main.js wrote
+        # something unparseable. Either way, fall through to the B-factor
+        # computation the caller already has as its own fallback.
         return None
     val = data.get("plddt")
+    if not isinstance(val, (int, float)):
+        return None
+    return val * 100 if val <= 1.5 else val
+
+
+def parse_score_remarks(pdb_path):
+    """Reads RF2's own metrics out of the predicted PDB.
+
+    RFantibody writes them into the structure file as `SCORE <key>: <value>`
+    lines (write_output -> pose_to_remarked_pdblines in
+    rfantibody/rf2/modules/model_runner.py), not into a companion metrics
+    file - so a companion-file lookup finds nothing and leaves pae null even
+    though RF2 reported it. Real keys seen in output: interaction_pae, pae,
+    pred_lddt, framework_aligned_cdr_rmsd, framework_aligned_H{1,2,3}_rmsd,
+    target_aligned_*.
+    """
+    scores = {}
+    with open(pdb_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not line.startswith("SCORE"):
+                continue
+            key, sep, val = line[len("SCORE") :].strip().partition(":")
+            if not sep:
+                continue
+            try:
+                scores[key.strip()] = float(val.strip())
+            except ValueError:
+                continue
+    return scores
+
+
+def as_plddt_percent(val):
+    """RF2 reports pLDDT as a 0-1 fraction; the UI's filters are on a 0-100
+    scale. Same normalization the sidecar/B-factor paths already apply."""
     if not isinstance(val, (int, float)):
         return None
     return val * 100 if val <= 1.5 else val
@@ -104,7 +142,11 @@ def find_pae(rf2_dir, stem):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except (OSError, ValueError):  # nosec B112
+            # Not worth logging: candidate extensions checked above include
+            # .sc, which is Rosetta's plain-text score format, not JSON - most
+            # misses here are an expected non-match, not a failure, for every
+            # single candidate scored.
             continue
         val = _search_pae_key(data)
         if val is not None:
@@ -141,8 +183,12 @@ def compute_dg(pdb_path):
         print("WARNING: PRODIGY tidak ditemukan di PATH; ΔG dilewati.")
         return None
     try:
+        # prodigy_exe comes from shutil.which() (a trusted PATH lookup, not
+        # user input) and pdb_path is a filename this script found itself via
+        # glob() over --rf2_dir - both passed as argv list elements, not
+        # through a shell, so there's no injection surface here.
         out = (
-            subprocess.check_output(
+            subprocess.check_output(  # nosec B603
                 [prodigy_exe, "-q", pdb_path, "--selection", "H", "T"],
                 stderr=subprocess.STDOUT,
                 timeout=120,
@@ -153,7 +199,15 @@ def compute_dg(pdb_path):
         last_line = out.splitlines()[-1]
         token = last_line.split()[-1]
         return float(token)
-    except Exception as e:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        IndexError,
+        ValueError,
+    ) as e:
+        # CalledProcessError/TimeoutExpired: PRODIGY itself failed or hung.
+        # IndexError/ValueError: its last line wasn't "<label> <float>" (e.g.
+        # PRODIGY's output format changed, or it printed only warnings).
         print(f"WARNING: PRODIGY gagal untuk {os.path.basename(pdb_path)}: {e}")
         return None
 
@@ -201,10 +255,19 @@ def main():
     for pdb_path in candidate_files:
         stem = os.path.splitext(os.path.basename(pdb_path))[0]
         pred_atoms = parse_ca_atoms(pdb_path, "H")
-        plddt = find_plddt_sidecar(args.rf2_dir, stem)
+        scores = parse_score_remarks(pdb_path)
+
+        plddt = as_plddt_percent(scores.get("pred_lddt"))
+        if plddt is None:
+            plddt = find_plddt_sidecar(args.rf2_dir, stem)
         if plddt is None:
             plddt = compute_plddt(pred_atoms)
-        pae = find_pae(args.rf2_dir, stem)
+
+        pae = scores.get("pae")
+        if pae is None:
+            pae = find_pae(args.rf2_dir, stem)
+        interaction_pae = scores.get("interaction_pae")
+
         dg = compute_dg(pdb_path)
 
         cdr_rmsd, h3_rmsd = None, None
@@ -246,6 +309,9 @@ def main():
                 "pdbPath": pdb_path,
                 "plddt": round(plddt, 2) if plddt is not None else None,
                 "pae": round(pae, 2) if pae is not None else None,
+                "interactionPae": (
+                    round(interaction_pae, 2) if interaction_pae is not None else None
+                ),
                 "cdrRmsd": round(cdr_rmsd, 3) if cdr_rmsd is not None else None,
                 "h3Rmsd": round(h3_rmsd, 3) if h3_rmsd is not None else None,
                 "dg": round(dg, 2) if dg is not None else None,

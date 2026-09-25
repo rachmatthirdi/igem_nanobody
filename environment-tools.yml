@@ -1,3 +1,7 @@
+# Versions are pinned so two builds on different dates produce the same env -
+# the guarantee README.md makes about Docker. They are the versions the
+# published image was built and tested with, except CodonTransformer (see
+# below). Bump deliberately and re-test; do not unpin.
 ---
 name: nanobody-tools
 channels:
@@ -5,12 +9,29 @@ channels:
 dependencies:
   - python=3.10
   - pip
-  - numpy
+  # Held below 2.0 because CodonTransformer 1.6.7 requires numpy<2.0.0. This
+  # is a hard constraint, not a preference: see the prodigy-prot pin below,
+  # which has to stay on the numpy<2 side of the same fence.
+  - numpy=1.26.4
   - pip:
-      - freesasa
-      - requests
-      - biopython
-      - prodigy-prot
-      - torch
-      - transformers
-      - CodonTransformer
+      - freesasa==2.2.1
+      - requests==2.34.2
+      - biopython==1.88
+      # Newest release that still declares numpy<2.0.0, which is what makes it
+      # co-installable with CodonTransformer 1.6.7. From 2.2.5 onwards
+      # prodigy-prot requires numpy>=2, and pip then refuses the environment
+      # outright rather than warning: with everything pinned, both constraints
+      # are resolved in one pass instead of package-by-package, so the
+      # incompatibility becomes a hard `CondaEnvException: Pip failed` at image
+      # build time. 2.2.4 also accepts biopython 1.88 (2.2.2 and earlier pin
+      # biopython==1.80) and freesasa 2.2.1 exactly as pinned above.
+      - prodigy-prot==2.2.4
+      - torch==2.12.1
+      - transformers==4.57.6
+      # codon_opt_core.py calls predict_dna_sequence(deterministic=...,
+      # match_protein=...), which only exist from 1.6.x. Unpinned, a build
+      # resolved to 1.5.2, whose signature lacks them - and since that raises
+      # inside a try block, codon optimization silently degraded to the static
+      # E. coli fallback table. 1.6.7 also declares scikit-learn, which
+      # CodonPrediction imports but 1.5.2 never listed.
+      - CodonTransformer==1.6.7

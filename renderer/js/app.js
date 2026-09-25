@@ -83,24 +83,125 @@
   }
 
   async function refreshMonitorSettings() {
-    const s = await window.api.getSettings();
-    $("mon-tools-env").textContent = s.toolsEnv;
-    $("mon-discotope-env").textContent = s.discotopeEnv;
-    $("mon-rfab").textContent = s.rfantibodyDir ? "✓ configured" : "⚠ not set";
-    $("mon-execmode").textContent = s.rfantibodyExecMode;
-    return s;
+    refreshDockerStorageMonitor();
+  }
+
+  // Shown in the sidebar regardless of install status (unlike the install
+  // banner, which hides itself once installMode === "docker") - this is the
+  // one place in the UI to always check where the ~19GB image actually
+  // lives, since that's Docker's own managed storage, not this app's folder.
+  async function refreshDockerStorageMonitor() {
+    const info = await window.api.getDockerStorageInfo();
+    const imgEl = $("mon-docker-image");
+    const storageEl = $("mon-docker-storage");
+    imgEl.textContent = info.dockerImage || "-";
+    imgEl.title = info.dockerImage || "";
+    storageEl.textContent = info.dockerRootDir || "not detected";
+    storageEl.title = info.dockerRootDir || "Docker not running or not found";
+  }
+
+  // ---------------- Install banner (Docker tools image) ----------------
+  let installBannerDismissed = false;
+
+  async function refreshInstallBanner() {
+    if (installBannerDismissed) return;
+    const settings = await window.api.getSettings();
+    if (settings.installMode === "docker") {
+      $("install-banner").style.display = "none";
+      return;
+    }
+
+    const docker = await window.api.checkDocker();
+    $("install-banner").style.display = "";
+    $("install-no-docker").style.display = docker.available ? "none" : "";
+    $("install-ready").style.display = docker.available ? "" : "none";
+    if (!docker.available) return;
+
+    const info = await window.api.getDockerStorageInfo();
+    $("install-storage-path").textContent =
+      info.dockerRootDir || "unknown (docker info failed)";
+    $("install-image-name").textContent = info.dockerImage;
+  }
+
+  function dismissInstallBanner() {
+    installBannerDismissed = true;
+    $("install-banner").style.display = "none";
+  }
+
+  function wireInstallBanner() {
+    $("btn-install-dismiss-nodocker").addEventListener(
+      "click",
+      dismissInstallBanner,
+    );
+    $("btn-install-dismiss").addEventListener("click", dismissInstallBanner);
+
+    $("btn-install-download").addEventListener("click", async () => {
+      const dlBtn = $("btn-install-download");
+      const cancelBtn = $("btn-install-cancel");
+      dlBtn.disabled = true;
+      cancelBtn.disabled = false;
+      window.ConsolePanel.log(
+        "info",
+        "Downloading the pre-built tools image from Docker Hub.",
+        "install",
+      );
+      try {
+        await window.api.pullDockerImage();
+        window.ConsolePanel.log("ok", "Tools image downloaded.", "install");
+        $("install-banner").style.display = "none";
+        refreshMonitorSettings();
+      } catch (e) {
+        const cancelled = e.message === "Cancelled by user.";
+        window.ConsolePanel.log(
+          cancelled ? "warn" : "error",
+          cancelled
+            ? "Docker pull cancelled."
+            : `Docker pull failed: ${e.message}`,
+          "install",
+        );
+      } finally {
+        dlBtn.disabled = false;
+        cancelBtn.disabled = true;
+      }
+    });
+
+    $("btn-install-cancel").addEventListener("click", async () => {
+      $("btn-install-cancel").disabled = true;
+      await window.api.cancelDockerPull();
+    });
+
+    $("btn-install-build-source").addEventListener("click", async () => {
+      const btn = $("btn-install-build-source");
+      btn.disabled = true;
+      window.ConsolePanel.log(
+        "info",
+        "Building the tools image from source (this can take 20-30 min).",
+        "install",
+      );
+      try {
+        await window.api.runDockerBuild();
+        window.ConsolePanel.log(
+          "ok",
+          "Docker image build complete.",
+          "install",
+        );
+        $("install-banner").style.display = "none";
+        refreshMonitorSettings();
+      } catch (e) {
+        window.ConsolePanel.log(
+          "error",
+          `Docker build failed: ${e.message}`,
+          "install",
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    });
   }
 
   // ---------------- Settings modal ----------------
   async function openSettingsModal() {
     const s = await window.api.getSettings();
-    $("set-condaExe").value = s.condaExe;
-    $("set-toolsEnv").value = s.toolsEnv;
-    $("set-discotopeEnv").value = s.discotopeEnv;
-    $("set-discotopeRepoDir").value = s.discotopeRepoDir;
-    $("set-rfantibodyDir").value = s.rfantibodyDir;
-    $("set-rfantibodyExecMode").value = s.rfantibodyExecMode;
-    $("set-wslDistro").value = s.wslDistro;
     $("set-dockerImage").value = s.dockerImage;
     $("set-gpuOverride").value = s.gpuOverride;
     $("settings-modal").classList.remove("hidden");
@@ -204,23 +305,8 @@
         btn.disabled = false;
       }
     });
-    $("pick-discotopeRepoDir").addEventListener("click", async () => {
-      const dir = await window.api.pickDirectory();
-      if (dir) $("set-discotopeRepoDir").value = dir;
-    });
-    $("pick-rfantibodyDir").addEventListener("click", async () => {
-      const dir = await window.api.pickDirectory();
-      if (dir) $("set-rfantibodyDir").value = dir;
-    });
     $("btn-settings-save").addEventListener("click", async () => {
       const settings = {
-        condaExe: $("set-condaExe").value,
-        toolsEnv: $("set-toolsEnv").value,
-        discotopeEnv: $("set-discotopeEnv").value,
-        discotopeRepoDir: $("set-discotopeRepoDir").value,
-        rfantibodyDir: $("set-rfantibodyDir").value,
-        rfantibodyExecMode: $("set-rfantibodyExecMode").value,
-        wslDistro: $("set-wslDistro").value,
         dockerImage: $("set-dockerImage").value,
         gpuOverride: $("set-gpuOverride").value,
       };
@@ -260,6 +346,7 @@
           window.StateUtils.applyLoaded(data);
           $("projects-modal").classList.add("hidden");
           window.TabScreening?.refresh();
+          window.TabConstruct?.refreshCandidateOptions?.();
           window.ConsolePanel.log(
             "ok",
             `Project "${p.name}" loaded.`,
@@ -286,6 +373,7 @@
     wireProgress();
     wireSettingsModal();
     wireProjectButtons();
+    wireInstallBanner();
 
     window.TabTarget.init();
     window.TabDesign.init();
@@ -295,5 +383,6 @@
     refreshGpuStatus();
     refreshMonitorSettings();
     refreshPlatformInfo();
+    refreshInstallBanner();
   });
 })();

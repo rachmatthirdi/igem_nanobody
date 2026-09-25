@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="css/styles.css" />
     <link
       rel="stylesheet"
-      href="../node_modules/pdbe-molstar/build/pdbe-molstar.css"
+      href="../node_modules/pdbe-molstar/build/pdbe-molstar-3.1.3.css"
     />
   </head>
   <body>
@@ -50,24 +50,24 @@
             <span id="mon-vram" class="monitor-value">-</span>
           </div>
           <div class="monitor-row">
-            <span class="monitor-label">Conda tools env</span>
-            <span id="mon-tools-env" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">DiscoTope env</span>
-            <span id="mon-discotope-env" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">RFantibody</span>
-            <span id="mon-rfab" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">Exec mode</span>
-            <span id="mon-execmode" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
             <span class="monitor-label">Detected OS</span>
             <span id="mon-detected-os" class="monitor-value">-</span>
+          </div>
+          <div class="monitor-row">
+            <span class="monitor-label">Docker image</span>
+            <span
+              id="mon-docker-image"
+              class="monitor-value monitor-value-truncate"
+              >-</span
+            >
+          </div>
+          <div class="monitor-row">
+            <span class="monitor-label">Docker storage</span>
+            <span
+              id="mon-docker-storage"
+              class="monitor-value monitor-value-truncate"
+              >-</span
+            >
           </div>
           <hr />
           <h3>Pipeline Flow</h3>
@@ -87,6 +87,64 @@
             <button class="tab-btn" data-tab="screening">🧪 Screening</button>
             <button class="tab-btn" data-tab="construct">🧫 Construct</button>
           </nav>
+
+          <!-- ============ INSTALL BANNER (Docker tools image) ============ -->
+          <div id="install-banner" class="card" style="display: none">
+            <h2>⚙️ Install External Tools</h2>
+
+            <div id="install-no-docker" style="display: none">
+              <p class="section-hint">
+                Docker wasn't detected on this machine. FreeSASA,
+                DiscoTope-3.0, CodonTransformer/PRODIGY, and the AI Design
+                pipeline (RFdiffusion/ProteinMPNN/RF2) all require it - the
+                Target tab works without it in the meantime.
+                <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noopener"
+                  >Install Docker</a
+                >, then reopen this app.
+              </p>
+              <div class="tab-footer-actions">
+                <button id="btn-install-dismiss-nodocker" class="btn btn-ghost">
+                  Skip for now
+                </button>
+              </div>
+            </div>
+
+            <div id="install-ready" style="display: none">
+              <p class="section-hint">
+                One-time download of the pre-built tools image from Docker
+                Hub (~19 GB, cached locally after this).
+              </p>
+              <div class="progress-item">
+                <div class="progress-label">
+                  <span>Download tools image</span
+                  ><span id="pg-install-pct">0%</span>
+                </div>
+                <div class="progress-bar">
+                  <div id="pg-install" class="progress-fill"></div>
+                </div>
+                <div class="progress-status" id="pg-install-status"></div>
+              </div>
+              <div class="section-hint">
+                Docker storage location:
+                <code id="install-storage-path">checking...</code> — image:
+                <code id="install-image-name">-</code>
+              </div>
+              <div class="tab-footer-actions">
+                <button id="btn-install-download" class="btn btn-primary">
+                  Download tools image
+                </button>
+                <button id="btn-install-cancel" class="btn btn-secondary" disabled>
+                  Cancel
+                </button>
+                <button id="btn-install-build-source" class="btn-link" type="button">
+                  Build from source instead
+                </button>
+                <button id="btn-install-dismiss" class="btn btn-ghost">
+                  Skip for now
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div id="tab-panels">
             <!-- ============ TAB 1: TARGET ============ -->
@@ -315,6 +373,7 @@
                           type="text"
                           id="cdr-h1-len"
                           value="7"
+                          min="5"
                           class="cdr-len-input"
                         />
                       </td>
@@ -347,6 +406,7 @@
                           type="text"
                           id="cdr-h2-len"
                           value="6"
+                          min="5"
                           class="cdr-len-input"
                         />
                       </td>
@@ -379,6 +439,7 @@
                           type="text"
                           id="cdr-h3-len"
                           value="9"
+                          min="5"
                           class="cdr-len-input"
                         />
                       </td>
@@ -532,6 +593,12 @@
                   <button id="btn-run-pipeline" class="btn btn-primary">
                     ▶ Run AI Design Pipeline
                   </button>
+                  <button id="btn-stop-pipeline" class="btn btn-secondary" disabled>
+                    ■ Stop Pipeline
+                  </button>
+                  <button id="btn-cancel-design" class="btn btn-ghost">
+                    ✕ Cancel Design
+                  </button>
                   <button
                     id="btn-goto-screening"
                     class="btn btn-secondary"
@@ -608,10 +675,17 @@
                 </div>
 
                 <div class="tab-footer-actions">
+                  <button id="btn-rescore" class="btn btn-secondary">
+                    🔄 Re-score &amp; Refresh
+                  </button>
                   <button id="btn-import-metrics" class="btn btn-ghost">
                     📂 Choose Metrics File... (Manual Import)
                   </button>
                   <span id="import-status" class="import-status"></span>
+                </div>
+                <div class="section-hint">
+                  Re-score reads the metrics again from this session's existing
+                  RF2 output — no need to re-run RFdiffusion/ProteinMPNN/RF2.
                 </div>
               </div>
 
@@ -639,6 +713,15 @@
               </div>
 
               <div class="card">
+                <div class="chart-header">
+                  <h2 style="margin: 0">Candidate Structure</h2>
+                  <span id="candidate-viewer-title" class="import-status">-</span>
+                </div>
+                <div id="candidate-viewer-container" class="viewer3d-container screening-viewer"></div>
+                <div id="candidate-viewer-status" class="section-hint">Select a candidate to view its RF2 structure.</div>
+              </div>
+
+              <div class="card">
                 <table class="data-table" id="candidates-table">
                   <thead>
                     <tr>
@@ -655,6 +738,12 @@
                   </thead>
                   <tbody></tbody>
                 </table>
+
+                <div class="tab-footer-actions">
+                  <button id="btn-goto-construct" class="btn btn-primary">
+                    Continue to Construct →
+                  </button>
+                </div>
               </div>
             </section>
 
@@ -692,12 +781,16 @@
                 <h2>Phase 8 — Anchor Protein</h2>
                 <div class="anchor-cards">
                   <button class="anchor-card" data-anchor="intimin">
-                    <div class="anchor-card-title">Intimin (EaeA)</div>
-                    <div class="anchor-card-sub">UniProt P43261</div>
+                    <div class="anchor-card-title">Intimin (EaeA) — Int660</div>
+                    <div class="anchor-card-sub">
+                      UniProt P43261, residues 1–660
+                    </div>
                   </button>
                   <button class="anchor-card" data-anchor="lpp-ompa">
                     <div class="anchor-card-title">Lpp-OmpA</div>
-                    <div class="anchor-card-sub">UniProt P69776 + P0A910</div>
+                    <div class="anchor-card-sub">
+                      P69776 (1–29) + P0A910 (67–180)
+                    </div>
                   </button>
                 </div>
                 <div
@@ -738,6 +831,7 @@
                     ><input type="checkbox" id="chk-pelb" /> Include additional
                     PelB signal peptide</label
                   >
+                  <div class="field-hint" id="pelb-hint" style="display: none"></div>
                 </div>
 
                 <div class="insert-components" id="insert-components">
@@ -809,47 +903,6 @@
         <div class="modal-content">
           <h2>⚙️ Settings</h2>
           <div class="form-row">
-            <label>Conda executable</label
-            ><input type="text" id="set-condaExe" />
-          </div>
-          <div class="form-row">
-            <label>Conda env (tools: FreeSASA/CodonTransformer/PRODIGY)</label
-            ><input type="text" id="set-toolsEnv" />
-          </div>
-          <div class="form-row">
-            <label>Conda env (DiscoTope-3.0)</label
-            ><input type="text" id="set-discotopeEnv" />
-          </div>
-          <div class="form-row">
-            <label>DiscoTope-3.0 repository path</label
-            ><input type="text" id="set-discotopeRepoDir" /><button
-              class="btn btn-ghost"
-              id="pick-discotopeRepoDir"
-            >
-              Choose...
-            </button>
-          </div>
-          <div class="form-row">
-            <label>RFantibody installation path</label
-            ><input type="text" id="set-rfantibodyDir" /><button
-              class="btn btn-ghost"
-              id="pick-rfantibodyDir"
-            >
-              Choose...
-            </button>
-          </div>
-          <div class="form-row">
-            <label>RFantibody execution mode</label>
-            <select id="set-rfantibodyExecMode">
-              <option value="wsl">WSL2 (Windows + NVIDIA via WSL)</option>
-              <option value="docker">Docker Desktop (GPU passthrough)</option>
-              <option value="native">Native (Linux host)</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label>WSL distro</label><input type="text" id="set-wslDistro" />
-          </div>
-          <div class="form-row">
             <label>Docker image</label
             ><input type="text" id="set-dockerImage" />
           </div>
@@ -914,7 +967,7 @@
     <script defer src="js/console-panel.js"></script>
     <script
       defer
-      src="../node_modules/pdbe-molstar/build/pdbe-molstar-plugin.js"
+      src="../node_modules/pdbe-molstar/build/pdbe-molstar-plugin-3.1.3.js"
     ></script>
     <script defer type="module" src="js/viewer3d.js"></script>
     <script defer src="js/tab-target.js"></script>
