@@ -1,5 +1,5 @@
 <!--
-DRAFT - not committed. Sections to paste into repo/README.md after review.
+DRAFT. Sections to paste into repo/README.md after review.
 Only things actually observed are stated as fact; "Not tested" means exactly that.
 Fill the TODO cells with the Linux results from the drylab team.
 -->
@@ -10,7 +10,7 @@ Fill the TODO cells with the Linux results from the drylab team.
 | --- | --- | --- | --- | --- |
 | Linux, no GPU | none | TODO (drylab) | TODO (drylab) | TODO (drylab) |
 | Linux, GPU (drylab server) | TODO (model, VRAM) | TODO (drylab) | TODO (drylab) | TODO (drylab) |
-| Windows 11 + Docker Desktop | NVIDIA RTX 3050 Laptop, 4 GB VRAM | Works (FreeSASA, DiscoTope, InterPro) | Works with minimal settings on `1ZVH`: RFdiffusion and ProteinMPNN completed. RF2 was fixed afterwards and not yet re-run to completion. | Not tested |
+| Windows 11 + Docker Desktop | NVIDIA RTX 3050 Laptop, 4 GB VRAM | Works (FreeSASA, DiscoTope, InterPro) | Works with minimal settings on `1ZVH` (2 backbones, 1 sequence each): RFdiffusion, ProteinMPNN and RF2 ran | Screening produced a candidate; Construct ran with it: codon optimisation (CodonTransformer, CAI 0.919), anchor construct and plasmid assembly (pET-28a(+), 2409 bp FASTA). The FASTA output path fix (see below) has not been re-run yet. |
 
 Windows notes:
 
@@ -24,6 +24,22 @@ Windows notes:
 - The app translates Windows paths for Docker (project folder is mounted at
   `/nbroot` inside the container). This only applies on Windows; Linux/macOS
   behaviour is unchanged. <!-- TODO: confirm on the Linux server after merge. -->
+
+Windows-only problems found and fixed while testing (none affect Linux):
+
+1. The Docker socket path was hard-coded to `/var/run/docker.sock`; Windows
+   uses the `//./pipe/docker_engine` named pipe, so the in-app image download
+   could not connect.
+2. Host paths such as `D:\...` were passed to `docker run -w/-v/-e`, which
+   Docker rejects (FreeSASA and DiscoTope exited with code 125). The project
+   folder is now mounted at `/nbroot` and paths are translated.
+3. That translation also rewrote the host side of the RF2 weights mount, so
+   Docker mounted an empty directory and RF2 failed with
+   `IsADirectoryError ... RF2_ab.pt`. The host side of `-v` is now left alone.
+4. Paths stored inside JSON argument files (the plasmid `output_dir`) are read
+   by Python in the container, where a `D:\...` string is just a file name, so
+   the FASTA was written to a stray folder in the repo root while the log
+   reported success. The path is now translated. Not yet re-run.
 
 ## Hardware requirements
 
@@ -47,5 +63,7 @@ The Target, Screening and Construct stages are light. The **Design** stage
   examples. Other targets have not all been verified either.
 - The Settings sidebar shows *Docker storage* as `/var/lib/docker` on Windows.
   This is only a display value and does not affect anything.
+- The tools image downloads ~19 GB (compressed) but takes ~53 GB on disk once
+  extracted, so plan disk space accordingly.
 - The first Design run downloads the RF2 weights (~281 MB) and caches them
   under `cache/weights/`.
