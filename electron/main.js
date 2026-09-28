@@ -283,7 +283,27 @@ function resetPipelineCancel() {
   pipelineCancelRequested = false;
 }
 
+// Windows hosts: "D:\proj" isn't a valid container path, so ROOT is mounted at
+// /nbroot and every ROOT-prefixed argument (and any /nbroot in the output) is
+// translated. Other platforms mount ROOT at itself and need no translation.
+const CROOT = "/nbroot";
+const ROOT_FWD = ROOT.split("\\").join("/");
+function toContainerArg(a) {
+  if (a === `${ROOT}:${ROOT}`) return `${ROOT}:${CROOT}`;
+  return a
+    .split(ROOT).join(CROOT)
+    .split(ROOT_FWD).join(CROOT)
+    .replace(/\/nbroot[^\s:'"]*/g, (m) => m.split("\\").join("/"));
+}
+function fromContainerText(t) {
+  return t.split(CROOT).join(ROOT_FWD);
+}
+
 function runProcess(cmd, args, { cwd, source, env } = {}) {
+  if (process.platform === "win32" && cmd === "docker" && args[0] === "run") {
+    // The host side of a "-v host:container" mount must stay a real Windows path.
+    args = args.map((a, i) => (args[i - 1] === "-v" && a !== `${ROOT}:${ROOT}` ? a : toContainerArg(a)));
+  }
   return new Promise((resolve, reject) => {
     // Honour a cancel that arrived before this stage got as far as spawning.
     if (pipelineCancelRequested) {
@@ -302,7 +322,7 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     let stderr = "";
 
     child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
+      const text = fromContainerText(chunk.toString());
       stdout += text;
       text
         .split(/\r?\n/)
@@ -311,7 +331,7 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     });
 
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
+      const text = fromContainerText(chunk.toString());
       stderr += text;
       text
         .split(/\r?\n/)
@@ -388,7 +408,7 @@ function pullDockerImageWithProgress(imageRef, stage) {
 
     const req = http.request(
       {
-        socketPath: "/var/run/docker.sock",
+        socketPath: process.platform === "win32" ? "//./pipe/docker_engine" : "/var/run/docker.sock",
         path: `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
         method: "POST",
       },
@@ -710,7 +730,8 @@ function parseCdrRemarks(pdbText) {
 // ---------------------------------------------------------------------------
 function readCacheJson(file) {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    // Container-written JSON may hold /nbroot paths; map them back to host paths.
+    return JSON.parse(fromContainerText(fs.readFileSync(file, "utf8")));
   } catch {
     return null;
   }
@@ -807,7 +828,9 @@ ipcMain.handle("fetch-pdb", async (_evt, pdbId) => {
 });
 
 ipcMain.handle("read-pdb-file", async (_evt, filePath) => {
-  return fs.readFileSync(filePath, "utf8");
+  // Also repairs paths saved by earlier runs, e.g. "D:\nbroot\work\x.pdb".
+  const fixed = String(filePath).replace(/^(?:[A-Za-z]:)?[\\/]nbroot(?=[\\/])/i, ROOT);
+  return fs.readFileSync(fixed, "utf8");
 });
 
 ipcMain.handle("get-structure-title", async (_evt, pdbId) => {
@@ -1536,7 +1559,9 @@ ipcMain.handle("build-plasmid", async (_evt, params) => {
   writeCacheJson(argsJson, {
     ...params,
     pelbAminoAcidSeq,
-    output_dir: DIRS.output,
+    // Read inside the container, so it must be a container path on Windows.
+    output_dir:
+      process.platform === "win32" ? toContainerArg(DIRS.output) : DIRS.output,
   });
   const outJson = path.join(DIRS.work, `plasmid_out_${Date.now()}.json`);
 
