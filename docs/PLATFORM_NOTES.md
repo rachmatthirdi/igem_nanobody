@@ -10,7 +10,7 @@ Fill the TODO cells with the Linux results from the drylab team.
 | --- | --- | --- | --- | --- |
 | Linux, no GPU | none | TODO (drylab) | TODO (drylab) | TODO (drylab) |
 | Linux, GPU (drylab server) | TODO (model, VRAM) | TODO (drylab) | TODO (drylab) | TODO (drylab) |
-| Windows 11 + Docker Desktop | NVIDIA RTX 3050 Laptop, 4 GB VRAM | Works (FreeSASA, DiscoTope, InterPro) | Works with minimal settings on `1ZVH` (2 backbones, 1 sequence each): RFdiffusion, ProteinMPNN and RF2 ran | Screening produced a candidate; Construct ran with it: codon optimisation (CodonTransformer, CAI 0.919), anchor construct and plasmid assembly (pET-28a(+), 2409 bp FASTA). The FASTA output path fix (see below) has not been re-run yet. |
+| Windows 11 + Docker Desktop | NVIDIA RTX 3050 Laptop, 4 GB VRAM | Works (FreeSASA, DiscoTope, InterPro) | Works with minimal settings on `1ZVH` (2 backbones, 1 sequence each): RFdiffusion, ProteinMPNN and RF2 ran | Screening produced a candidate; Construct ran with it: codon optimisation (CodonTransformer, CAI 0.919), anchor construct and plasmid assembly (pET-28a(+), 2409 bp FASTA). The exported FASTA lands in `output/` after the path fix below (re-run and checked). |
 
 Windows notes:
 
@@ -39,7 +39,8 @@ Windows-only problems found and fixed while testing (none affect Linux):
 4. Paths stored inside JSON argument files (the plasmid `output_dir`) are read
    by Python in the container, where a `D:\...` string is just a file name, so
    the FASTA was written to a stray folder in the repo root while the log
-   reported success. The path is now translated. Not yet re-run.
+   reported success. The path is now translated; a re-run wrote the FASTA to
+   `output/` as expected.
 
 ## Hardware requirements
 
