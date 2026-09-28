@@ -388,7 +388,7 @@ function pullDockerImageWithProgress(imageRef, stage) {
 
     const req = http.request(
       {
-        socketPath: "/var/run/docker.sock",
+        socketPath: process.platform === "win32" ? "//./pipe/docker_engine" : "/var/run/docker.sock",
         path: `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
         method: "POST",
       },
