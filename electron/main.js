@@ -301,7 +301,8 @@ function fromContainerText(t) {
 
 function runProcess(cmd, args, { cwd, source, env } = {}) {
   if (process.platform === "win32" && cmd === "docker" && args[0] === "run") {
-    args = args.map(toContainerArg);
+    // The host side of a "-v host:container" mount must stay a real Windows path.
+    args = args.map((a, i) => (args[i - 1] === "-v" && a !== `${ROOT}:${ROOT}` ? a : toContainerArg(a)));
   }
   return new Promise((resolve, reject) => {
     // Honour a cancel that arrived before this stage got as far as spawning.
