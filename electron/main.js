@@ -283,7 +283,26 @@ function resetPipelineCancel() {
   pipelineCancelRequested = false;
 }
 
+// Windows hosts: "D:\proj" isn't a valid container path, so ROOT is mounted at
+// /nbroot and every ROOT-prefixed argument (and any /nbroot in the output) is
+// translated. Other platforms mount ROOT at itself and need no translation.
+const CROOT = "/nbroot";
+const ROOT_FWD = ROOT.split("\\").join("/");
+function toContainerArg(a) {
+  if (a === `${ROOT}:${ROOT}`) return `${ROOT}:${CROOT}`;
+  return a
+    .split(ROOT).join(CROOT)
+    .split(ROOT_FWD).join(CROOT)
+    .replace(/\/nbroot[^\s:'"]*/g, (m) => m.split("\\").join("/"));
+}
+function fromContainerText(t) {
+  return t.split(CROOT).join(ROOT_FWD);
+}
+
 function runProcess(cmd, args, { cwd, source, env } = {}) {
+  if (process.platform === "win32" && cmd === "docker" && args[0] === "run") {
+    args = args.map(toContainerArg);
+  }
   return new Promise((resolve, reject) => {
     // Honour a cancel that arrived before this stage got as far as spawning.
     if (pipelineCancelRequested) {
@@ -302,7 +321,7 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     let stderr = "";
 
     child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
+      const text = fromContainerText(chunk.toString());
       stdout += text;
       text
         .split(/\r?\n/)
@@ -311,7 +330,7 @@ function runProcess(cmd, args, { cwd, source, env } = {}) {
     });
 
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
+      const text = fromContainerText(chunk.toString());
       stderr += text;
       text
         .split(/\r?\n/)
