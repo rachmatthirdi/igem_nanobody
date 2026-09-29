@@ -158,7 +158,9 @@
     if (!el) return;
     el.textContent =
       (DOCKER_FAILURE_TEXT[docker.reason] || DOCKER_FAILURE_TEXT.unknown) +
-      (docker.detail ? ` (${docker.detail})` : "");
+      (docker.detail ? ` (${docker.detail})` : "") +
+      // Replaces the generic advice above when we can name the actual cause.
+      (docker.hint ? ` — ${docker.hint}` : "");
   }
 
   function dismissInstallBanner() {

@@ -2100,6 +2100,45 @@ ipcMain.handle("check-gpu", async () => {
 // The last one is the common first-install mistake on Linux (added to the
 // docker group without logging out again) and has a one-line fix, so telling
 // the user to go install Docker was actively misleading.
+// "The daemon isn't running" is true but useless when the daemon is refusing
+// to start, which is what a broken NVIDIA runtime does: with
+// "default-runtime": "nvidia" in daemon.json, dockerd fails to come up *at
+// all*, not just for GPU containers. The socket is then never created and
+// every pull dies with ENOENT, which looks like a network fault and isn't.
+// That is also why turning CUDA off can make a pull start working - the pull
+// never touched the GPU, the daemon did.
+// Telling that user to run `systemctl start docker` sends them into the same
+// wall, so read the daemon's own config and name the likely cause instead.
+// Linux only: Docker Desktop keeps its configuration elsewhere.
+function dockerDaemonHint(configPath = "/etc/docker/daemon.json") {
+  if (process.platform !== "linux") return null;
+  let cfg;
+  try {
+    cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    // No config, unreadable, or malformed - nothing to say. (A malformed
+    // daemon.json also stops dockerd starting, but we can't tell that apart
+    // from "not present" without root, so don't guess.)
+    return null;
+  }
+  if (cfg["default-runtime"] !== "nvidia") return null;
+  const runtime = spawnSync("nvidia-container-runtime", ["--version"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const missing = !!runtime.error || runtime.status !== 0;
+  return (
+    `${configPath} sets "default-runtime": "nvidia"` +
+    (missing
+      ? ", and nvidia-container-runtime does not respond on this machine. "
+      : ". If that runtime is misconfigured, ") +
+    `dockerd then refuses to start entirely, so no socket is created and ` +
+    `every pull fails. Run \`sudo dockerd\` to see the real error; removing ` +
+    `the "default-runtime" line confirms it (GPU containers then need an ` +
+    `explicit --runtime=nvidia).`
+  );
+}
+
 function classifyDockerFailure(res) {
   if (res.error && res.error.code === "ENOENT") return "not-installed";
   const out = `${res.stderr || ""}${res.stdout || ""}`.toLowerCase();
@@ -2115,13 +2154,16 @@ ipcMain.handle("check-docker", async () => {
       ["version", "--format", "{{.Server.Version}}"],
       { encoding: "utf8", timeout: 5000 },
     );
-    if (res.error || res.status !== 0)
+    if (res.error || res.status !== 0) {
+      const reason = classifyDockerFailure(res);
       return {
         available: false,
         version: null,
-        reason: classifyDockerFailure(res),
+        reason,
         detail: (res.stderr || "").trim().split("\n")[0] || null,
+        hint: reason === "not-running" ? dockerDaemonHint() : null,
       };
+    }
     return {
       available: true,
       version: res.stdout.trim(),
@@ -2177,8 +2219,29 @@ ipcMain.handle("pull-docker-image", async () => {
       { stage: "install", what: "Docker image pull" },
     );
   } catch (e) {
-    if (e.cancelled)
+    if (e.cancelled) {
       sendProgress("install", lastPullPercent, "cancelled", e.message);
+      throw e;
+    }
+    // The Settings button reaches this without going through the install
+    // banner, so nothing has checked Docker first: a daemon that isn't there
+    // surfaces as a bare connection error. Ask the CLI what is actually wrong
+    // and say that instead - including the NVIDIA-runtime case, where the
+    // generic "start the daemon" advice walks the user into the same failure.
+    if (/ENOENT|EACCES|ECONNREFUSED|connect to the docker/i.test(e.message)) {
+      const res = spawnSync("docker", ["version"], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      if (res.error || res.status !== 0) {
+        const reason = classifyDockerFailure(res);
+        const hint = reason === "not-running" ? dockerDaemonHint() : null;
+        throw new Error(
+          `${e.message} - Docker itself is not reachable (${reason}).` +
+            (hint ? ` ${hint}` : ""),
+        );
+      }
+    }
     throw e;
   }
   saveSettingsToDisk({ installMode: "docker" });
