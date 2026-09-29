@@ -83,7 +83,7 @@ npm start
 ```
 
 `npm start` should open the app window. Try the **Target** tab first (e.g.
-the `5M13` quick example) — it needs nothing beyond what you just
+the `1ZVH` quick example) — it needs nothing beyond what you just
 installed.
 
 ## 2. Get the tools image
