@@ -2231,17 +2231,85 @@ ipcMain.handle("run-docker-build", async () => {
   return getSettings();
 });
 
+// A saved project is mostly paths - the target PDB, the RFdiffusion
+// backbones, the ProteinMPNN and RF2 output dirs. Written as they are, they
+// name one machine's home directory, so the project breaks the moment the
+// folder is moved or renamed, and can never be opened on anyone else's
+// laptop. Stored against CROOT instead, they mean the same thing everywhere,
+// because CROOT is where the project is mounted on every host.
+//
+// Walks the object rather than rewriting the JSON text: on Windows a path in
+// JSON is escaped ("D:\\work\\igem"), which a plain text replace of ROOT
+// would never match.
+function mapProjectStrings(value, fn) {
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) return value.map((v) => mapProjectStrings(v, fn));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = mapProjectStrings(v, fn);
+    return out;
+  }
+  return value;
+}
+
+// Projects saved before the above still hold absolute paths from whichever
+// machine wrote them. They can't be translated - the root they were written
+// against is gone - so re-root them onto the directory names this app owns,
+// and only when the original really is missing, so a still-valid path is
+// never touched. Paths inside the image (/opt/tools/...) match nothing here
+// and are left alone, as they should be: they're already the same everywhere.
+const PROJECT_OWNED_DIRS = ["work", "cache", "output", "projects", "python"];
+function repairLegacyProjectPath(value, unresolved) {
+  if (!/[\\/]/.test(value) || fs.existsSync(value)) return value;
+  const forward = value.split("\\").join("/");
+  for (const dir of PROJECT_OWNED_DIRS) {
+    const at = forward.lastIndexOf(`/${dir}/`);
+    if (at < 0) continue;
+    const candidate = path.join(ROOT, forward.slice(at + 1));
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // Left as it was rather than pointed somewhere plausible: a path that names
+  // a file which isn't here is honest, a fabricated one isn't. Only report the
+  // ones that look like this app's own paths - anything else is some other
+  // string with a slash in it.
+  if (PROJECT_OWNED_DIRS.some((d) => forward.includes(`/${d}/`)))
+    unresolved.push(value);
+  return value;
+}
+
 ipcMain.handle("save-project", async (_evt, state) => {
   const id = state.id || `project_${Date.now()}`;
   const filePath = path.join(DIRS.projects, `${id}.json`);
-  const payload = { ...state, id, savedAt: new Date().toISOString() };
+  const payload = mapProjectStrings(
+    { ...state, id, savedAt: new Date().toISOString() },
+    toContainerArg,
+  );
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
   return { id, filePath };
 });
 
 ipcMain.handle("load-project", async (_evt, id) => {
   const filePath = path.join(DIRS.projects, `${id}.json`);
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const unresolved = [];
+  const project = mapProjectStrings(raw, (v) =>
+    repairLegacyProjectPath(fromContainerText(v), unresolved),
+  );
+  // Translating a path doesn't create the file it names. A project from
+  // another machine opens with its settings intact but without the gigabytes
+  // of design output that never travelled with it, and the stages that need
+  // those files have to be re-run. Say which ones are missing now, rather than
+  // letting the user find out one failed click at a time.
+  if (unresolved.length)
+    sendLog(
+      "warn",
+      `Project "${id}" refers to ${unresolved.length} file(s) that aren't on ` +
+        `this machine - the stages that produced them need re-running: ` +
+        unresolved.slice(0, 5).join(", ") +
+        (unresolved.length > 5 ? ", ..." : ""),
+      "project",
+    );
+  return project;
 });
 
 ipcMain.handle("list-projects", async () => {
