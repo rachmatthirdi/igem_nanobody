@@ -64,8 +64,16 @@ Design pipeline is already in the image.
   on Linux for GPU passthrough into the container. RFdiffusion,
   ProteinMPNN, RF2, and DiscoTope-3.0 all auto-fall back to CPU when no
   GPU is detected — the app runs and produces correct output either way —
-  but RFdiffusion/RF2 specifically go from **seconds** on a GPU to
-  **minutes** on CPU. The app only passes `--gpus all` to Docker when it
+  but RFdiffusion and RF2 are far slower without one. On CPU only
+  (i5-12500H, 16 threads, 11 GB RAM), one full Design run at the smallest
+  settings — 1 backbone, 1 sequence — took roughly **75–80 minutes** for
+  RFdiffusion and **~20–25 minutes** for RF2, with ProteinMPNN finishing in
+  seconds; about **1.5–2 hours** end to end, and it produced a good result
+  (pLDDT 0.91). Both stages scale with the number of designs, so asking for
+  more multiplies those figures. Treat this as one measurement on one
+  machine, derived from file timestamps rather than timed directly, and
+  note that we have no measured GPU figure to compare it against yet. The
+  app only passes `--gpus all` to Docker when it
   detects a GPU, so CPU-only machines need no extra setup. Docker Desktop
   on Windows *does* pass an NVIDIA GPU through (WSL2 backend) — measured at
   ~94% GPU utilisation during RFdiffusion on a Windows 11 test machine.

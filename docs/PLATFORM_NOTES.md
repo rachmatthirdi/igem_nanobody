@@ -8,9 +8,31 @@ Fill the TODO cells with the Linux results from the drylab team.
 
 | Platform | GPU | Target tab | Design tab | Screening / Construct |
 | --- | --- | --- | --- | --- |
-| Linux, no GPU | none | TODO (drylab) | TODO (drylab) | TODO (drylab) |
+| Linux, no GPU (Ubuntu, i5-12500H, 16 threads, 11 GB RAM) | none (`nvidia-smi` not present) | Works (FreeSASA, DiscoTope-3.0, InterPro) | Works on `2Z1P` at the smallest settings (1 backbone, 1 sequence): RFdiffusion, ProteinMPNN and RF2 all completed on CPU, pLDDT 0.91. Slow — see timings below | Construct verified this session: codon optimisation (CodonTransformer, CAI 0.892 — the real model, not the fallback table), CAI calculation, and plasmid assembly (pET-28a(+) FASTA written to `output/`) |
 | Linux, GPU (drylab server) | TODO (model, VRAM) | TODO (drylab) | TODO (drylab) | TODO (drylab) |
 | Windows 11 + Docker Desktop | NVIDIA RTX 3050 Laptop, 4 GB VRAM | Works (FreeSASA, DiscoTope, InterPro) | Works with minimal settings on `1ZVH` (2 backbones, 1 sequence each): RFdiffusion, ProteinMPNN and RF2 ran | Screening produced a candidate; Construct ran with it: codon optimisation (CodonTransformer, CAI 0.919), anchor construct and plasmid assembly (pET-28a(+), 2409 bp FASTA). The exported FASTA lands in `output/` after the path fix below (re-run and checked). |
+
+Linux, no GPU — timings:
+
+| Stage | Duration on CPU |
+| --- | --- |
+| RFdiffusion | ~75–80 min |
+| ProteinMPNN | seconds |
+| RF2 | ~20–25 min |
+| **Design tab, end to end** | **~1.5–2 hours** |
+
+Read these as one run on one machine, at 1 backbone and 1 sequence, and as
+*derived* numbers: they come from the start time encoded in each stage's
+output directory name against that directory's last-modified time, so they
+assume the run was not interrupted. They were not timed with a stopwatch.
+RFdiffusion and RF2 both scale with the number of designs requested, so
+larger settings multiply them.
+
+The Design tab therefore works without a GPU — it is not blocked, only slow,
+and the result was good quality. What we cannot state yet is the speed-up a
+GPU gives, because no GPU run has been timed. <!-- TODO: time one Design run
+on the drylab GPU server at the same settings, so the comparison is measured
+rather than asserted. -->
 
 Windows notes:
 
