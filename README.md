@@ -41,7 +41,19 @@ Design pipeline is already in the image.
 - **Docker** — Required for FreeSASA, DiscoTope-3.0,
   CodonTransformer/PRODIGY, and RFdiffusion/ProteinMPNN/RF2.
   [Install Docker](https://docs.docker.com/get-docker/) (Docker Desktop on
-  macOS/Windows, Docker Engine on Linux) with the daemon running.
+  macOS/Windows, Docker Engine on Linux) with the daemon running. See
+  [Docker setup per OS](#docker-setup-per-os) — the pull itself is identical
+  everywhere, but what it takes to have a reachable daemon is not.
+- **A supported host** — Linux, WSL2 and macOS are the paths documented here.
+  Windows support is being added separately (see `docs/PLATFORM_NOTES.md` on
+  the `afif/add-windows-support` branch); on this branch a Windows host has no
+  path translation, so the mount check below reports the failure instead of
+  the app breaking further in. Whichever host you use, the project path must
+  not contain a `:` — `docker run -v src:dst` splits on colons.
+- **A working bind mount** — the app verifies once per launch that the project
+  directory really round-trips into a container, since a mount that is
+  accepted but not shared makes every tool "succeed" while writing into the
+  container, where `--rm` discards it.
 - **Internet access** — `npm install` downloads Electron's ~200 MB binary;
   getting the tools image downloads ~19 GB from Docker Hub (one-time,
   cached locally after that), plus a ~281 MB RF2 weight file on first
@@ -92,6 +104,69 @@ Equivalent from a terminal:
 ```bash
 docker pull rachmatthirdi/igem_brawijaya:latest
 ```
+
+**The same image everywhere.** The registry holds a single manifest, so the
+bytes pulled are identical on Ubuntu, WSL and macOS, and identical whether or
+not the machine has a GPU — there is no CPU-only variant to choose. CUDA
+changes nothing about the pull or where the image is stored; it only decides
+whether `--gpus all` is added at `docker run` time. A CPU-only machine still
+downloads the CUDA-enabled PyTorch builds inside the image and simply doesn't
+use them.
+
+**Finding the daemon.** The app pulls over the Docker Engine API to get real
+byte-level progress, and works out where the daemon listens rather than
+assuming: `DOCKER_HOST` first, then the active `docker context`, then the
+usual per-platform locations (`/var/run/docker.sock`, the rootless socket
+under `$XDG_RUNTIME_DIR`, Docker Desktop for Linux's socket under `~/.docker/`,
+and the `\\.\pipe\docker_engine` named pipe on Windows). If none of those
+can be reached — an `ssh://` context, or a TLS-protected TCP daemon — it falls
+back to running `docker pull` itself, which reports progress per layer instead
+of per byte but works anywhere the CLI does.
+
+### Docker setup per OS
+
+The pull is byte-identical on every OS and on GPU and non-GPU machines
+alike (single manifest, no variants). What differs is only what it takes
+for a daemon to be reachable at all — which is where every failure this
+project has actually seen came from.
+
+**Ubuntu / Linux (native)** — install Docker Engine, then add yourself to
+the `docker` group and **log out and back in**:
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+The group change does not apply to your current session, so `docker` can
+be installed and still fail with `permission denied` until you do. For
+GPU, also install
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+**WSL2** — run the app **inside** the WSL shell, not from Windows. Then
+either:
+
+- enable Docker Desktop → Settings → Resources → **WSL Integration** for
+  that distro (the socket inside the distro is then a proxy to Docker
+  Desktop's daemon), or
+- install Docker Engine inside the distro itself.
+
+If you install Docker Engine inside WSL, note that **WSL has no systemd by
+default**, so `sudo systemctl start docker` fails and the daemon does not
+start on its own. Use `sudo service docker start`, and repeat it each time
+the distro restarts. A daemon that was never started is the most common
+cause of `connect ENOENT /var/run/docker.sock`.
+
+For GPU in WSL, install **only the Windows NVIDIA driver** — WSL passes it
+through automatically. Do not install a Linux driver inside the distro.
+
+**macOS** — Docker Desktop, and add the project's directory under Settings
+→ Resources → **File Sharing**, otherwise the bind mount is not really
+shared and tools write into the container instead of onto your disk. No
+NVIDIA passthrough exists, so everything runs on CPU.
+
+**Windows (native)** — not covered by the steps on this branch; use WSL2 for
+now. Windows support (mounting the project at a fixed container path and
+translating paths) is in progress separately.
 
 ### Building from source instead
 
@@ -373,7 +448,8 @@ python/         FreeSASA, CAI, codon optimization, scoring, anchor/plasmid
 docker/         Dockerfile (combined tools image: conda envs +
                 DiscoTope-3.0 + RFantibody)
 cache/          fetched PDB/InterPro/anchor data (offline-first), plus
-                weights/ (RF2_ab.pt, downloaded on first Design tab run)
+                weights/ (RF2_ab.pt, downloaded on first Design tab run),
+                hf/ + torch/ (model caches) and home/ (HOME for container runs)
 projects/       saved projects (JSON)
 output/         final FASTA ready for synthesis
 work/           pipeline scratch files (created automatically)
@@ -402,6 +478,47 @@ work/           pipeline scratch files (created automatically)
   `docker/Dockerfile` already runs `conda tos accept` for both channels
   right after installing Miniconda, so this should only surface if you're
   building a modified Dockerfile that skips that step.
+- **`connect ENOENT /var/run/docker.sock` when pulling** — nothing is
+  listening at that socket. On WSL, the usual cause is that the daemon was
+  never started (`sudo service docker start`) or that Docker Desktop's WSL
+  Integration isn't enabled for the distro. The app finds the daemon
+  dynamically (`DOCKER_HOST`, then the active `docker context`, then the
+  per-platform defaults), so a socket in a non-standard location is handled —
+  but no amount of searching helps if the daemon isn't running. Confirm with
+  `docker context ls` and `ls -l /var/run/docker.sock`.
+- **Docker daemon won't start after installing CUDA support** — if
+  `/etc/docker/daemon.json` sets `"default-runtime": "nvidia"` and
+  `nvidia-container-runtime` isn't working, `dockerd` refuses to start
+  *entirely*, not just for GPU containers. The socket is then never created
+  and every pull fails with `ENOENT`, which looks like a network problem but
+  isn't. Run `sudo dockerd` in a terminal to see the real reason, and remove
+  the `default-runtime` line to confirm. This is why "disabling CUDA" can
+  make a pull start working — the pull never involved the GPU, the daemon did.
+- **The install banner says Docker is unavailable** — the banner now names
+  which of the three cases it is. "Not installed" means what it says.
+  "Daemon isn't running" needs Docker Desktop started, or
+  `sudo systemctl start docker` on Linux. "Permission denied" is the usual
+  first-install slip on Linux: `sudo usermod -aG docker $USER`, then **log
+  out and back in** — the group change doesn't apply to your existing
+  session, which is why `docker` can be installed and still unreachable.
+- **"produced no readable output" / "doesn't exist on the host"** — the
+  container ran and reported success, but the host can't see the file it
+  wrote, which means the project directory isn't really shared into the
+  container. On macOS/Windows, add the project's parent directory under
+  Docker Desktop → Settings → Resources → File Sharing. This used to fail
+  silently: the run looked successful and the Live Console printed a
+  plausible path for a file that had already been discarded with the
+  container.
+- **Output files owned by `root` (Linux)** — shouldn't happen any more: on
+  Linux the app passes `--user <your uid>:<your gid>` to `docker run`, so
+  files the container writes under `output/`, `work/` and `cache/` belong to
+  you. The one exception is the RFantibody stages (RFdiffusion/ProteinMPNN/
+  RF2), which must stay root because `uv` lives in `/root/.local/bin` and
+  `/root` is mode 700 inside the image; those runs hand ownership back with
+  a `chown` straight afterwards, including when they fail or you cancel
+  them. Leftovers from an install that predates this are reclaimed once,
+  automatically, before the first container command. If you still hit a
+  root-owned file, `sudo chown -R "$USER:$USER" cache work output` clears it.
 - **GPU not passed through inside Docker on Linux** — install
   [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
   then use Settings → **Test GPU access** to confirm Docker can reach it

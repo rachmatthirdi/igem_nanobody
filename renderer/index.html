@@ -93,14 +93,14 @@
             <h2>⚙️ Install External Tools</h2>
 
             <div id="install-no-docker" style="display: none">
+              <!-- Filled by refreshInstallBanner(): what's actually wrong
+                   (missing, not running, or not reachable by this user) and
+                   the fix for that specific case. -->
+              <p class="section-hint" id="install-docker-reason"></p>
               <p class="section-hint">
-                Docker wasn't detected on this machine. FreeSASA,
-                DiscoTope-3.0, CodonTransformer/PRODIGY, and the AI Design
-                pipeline (RFdiffusion/ProteinMPNN/RF2) all require it - the
-                Target tab works without it in the meantime.
-                <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noopener"
-                  >Install Docker</a
-                >, then reopen this app.
+                FreeSASA, DiscoTope-3.0, CodonTransformer/PRODIGY, and the AI
+                Design pipeline (RFdiffusion/ProteinMPNN/RF2) all require
+                Docker - the Target tab works without it in the meantime.
               </p>
               <div class="tab-footer-actions">
                 <button id="btn-install-dismiss-nodocker" class="btn btn-ghost">

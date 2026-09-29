@@ -115,12 +115,50 @@
     $("install-banner").style.display = "";
     $("install-no-docker").style.display = docker.available ? "none" : "";
     $("install-ready").style.display = docker.available ? "" : "none";
-    if (!docker.available) return;
+    if (!docker.available) {
+      renderDockerFailure(docker);
+      return;
+    }
+    // Docker works, but something about this host means the containers never
+    // will. Say so here rather than after a 19 GB download.
+    if (docker.blockers?.length) {
+      $("install-no-docker").style.display = "";
+      $("install-ready").style.display = "none";
+      $("install-docker-reason").textContent = docker.blockers[0];
+      return;
+    }
 
     const info = await window.api.getDockerStorageInfo();
     $("install-storage-path").textContent =
       info.dockerRootDir || "unknown (docker info failed)";
     $("install-image-name").textContent = info.dockerImage;
+  }
+
+  // Docker being unavailable has three different fixes, and telling everyone
+  // to go install Docker only helps one of them. The "permission" case in
+  // particular is the standard first-install slip on Linux: `usermod -aG
+  // docker` doesn't take effect until you log out, so the CLI is right there
+  // and still can't reach the socket.
+  const DOCKER_FAILURE_TEXT = {
+    "not-installed":
+      "Docker isn't installed on this machine. Install Docker (Docker Desktop " +
+      "on macOS/Windows, Docker Engine on Linux), then reopen this app.",
+    "not-running":
+      "Docker is installed but its daemon isn't running. Start Docker Desktop, " +
+      "or on Linux run: sudo systemctl start docker",
+    permission:
+      "Docker is installed but this user can't reach it (permission denied). " +
+      "On Linux: sudo usermod -aG docker $USER - then log out and back in for " +
+      "it to take effect.",
+    unknown: "Docker was found but didn't respond to a version check.",
+  };
+
+  function renderDockerFailure(docker) {
+    const el = $("install-docker-reason");
+    if (!el) return;
+    el.textContent =
+      (DOCKER_FAILURE_TEXT[docker.reason] || DOCKER_FAILURE_TEXT.unknown) +
+      (docker.detail ? ` (${docker.detail})` : "");
   }
 
   function dismissInstallBanner() {

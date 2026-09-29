@@ -36,6 +36,7 @@ const DIRS = {
   cacheWeights: path.join(ROOT, "cache", "weights"), // model weights the app fetches itself (licenses that forbid redistribution)
   cacheHf: path.join(ROOT, "cache", "hf"), // HuggingFace cache (CodonTransformer's model), kept out of the throwaway container
   cacheTorch: path.join(ROOT, "cache", "torch"), // torch.hub cache (DiscoTope's ESM-IF1 weights), same reason as cacheHf
+  cacheHome: path.join(ROOT, "cache", "home"), // HOME for non-root container runs (see HOST_IDS) - /root isn't readable by the host uid, and / isn't writable, so anything writing to ~ would fail
   projects: path.join(ROOT, "projects"),
   output: path.join(ROOT, "output"),
   python: path.join(ROOT, "python"),
@@ -86,6 +87,9 @@ const DEFAULT_SETTINGS = {
   gpuOverride: "auto", // 'auto' | 'on' | 'off' - manual escape hatch for when
   // auto-detection gets it wrong (e.g. nvidia-smi present but the check fails
   // for some host-specific reason, or the user wants to force CPU for testing)
+  ownershipReclaimed: false, // one-time flag: whether the root-owned leftovers
+  // from before container runs became non-root have been handed back (see
+  // ensureOwnershipReclaimed)
 };
 
 // Conda env names and repo paths baked into the Docker image by
@@ -124,7 +128,12 @@ async function withRetry(fn, { maxAttempts = 5, stage, what }) {
     } catch (e) {
       // A user-initiated cancel isn't a transient failure - retrying would
       // just restart the download right after they asked it to stop.
-      if (e.cancelled || attempt === maxAttempts) throw e;
+      // Neither is a missing socket or a denied one: the daemon isn't going to
+      // appear, or the user isn't going to be added to the docker group, in
+      // the next 10 seconds. Retrying those made the user sit through 100s of
+      // backoff before seeing an error that was final from the first attempt.
+      const permanent = e.code === "ENOENT" || e.code === "EACCES";
+      if (e.cancelled || permanent || attempt === maxAttempts) throw e;
       const delaySec = attempt * 10;
       sendLog(
         "warn",
@@ -366,11 +375,107 @@ let activePullReq = null;
 let pullCancelRequested = false;
 let lastPullPercent = 0;
 
+// The in-flight CLI pull, when the Engine API isn't reachable and we fell back
+// to `docker pull` (see pullDockerImageWithProgress).
+let activePullChild = null;
+
 function cancelDockerPull() {
-  if (!activePullReq) return false;
   pullCancelRequested = true;
-  activePullReq.destroy();
-  return true;
+  if (activePullReq) {
+    activePullReq.destroy();
+    return true;
+  }
+  if (activePullChild) {
+    activePullChild.kill("SIGTERM");
+    return true;
+  }
+  pullCancelRequested = false;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Where the Docker daemon actually listens. There is no single answer: a stock
+// Linux Docker Engine uses /var/run/docker.sock, but Docker Desktop for Linux
+// puts its own socket under ~/.docker/desktop/, rootless Docker uses
+// $XDG_RUNTIME_DIR/docker.sock, Windows uses a named pipe, and colima/remote
+// setups point DOCKER_HOST somewhere else entirely. Hardcoding one path meant
+// the pull failed on any machine that wasn't the first case - while the CLI
+// check right next to it still said Docker was fine, because the CLI does this
+// same resolution itself.
+// ---------------------------------------------------------------------------
+function parseDockerHost(value) {
+  if (!value) return null;
+  if (value.startsWith("unix://")) return { socketPath: value.slice(7) };
+  // Node talks to a Windows named pipe through socketPath too.
+  if (value.startsWith("npipe://"))
+    return { socketPath: value.slice(8).replace(/\//g, "\\") };
+  const tcp = /^(?:tcp|http):\/\/([^/:]+):(\d+)/.exec(value);
+  if (tcp) return { host: tcp[1], port: Number(tcp[2]) };
+  return null;
+}
+
+function dockerEndpointCandidates() {
+  // DOCKER_HOST wins: if the user set it, everything else on the machine
+  // (including the CLI) is already following it.
+  const fromEnv = parseDockerHost(process.env.DOCKER_HOST);
+  if (fromEnv) return [fromEnv];
+
+  const candidates = [];
+  // Ask the CLI which endpoint its active context points at. This covers
+  // Docker Desktop for Linux and any custom context without us having to know
+  // their layouts.
+  try {
+    const res = spawnSync(
+      "docker",
+      ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    if (res.status === 0) {
+      const parsed = parseDockerHost(res.stdout.trim());
+      if (parsed) candidates.push(parsed);
+    }
+  } catch {
+    // CLI missing or context unreadable - fall through to the defaults below.
+  }
+
+  if (process.platform === "win32") {
+    candidates.push({ socketPath: "\\\\.\\pipe\\docker_engine" });
+  } else {
+    const home = app.getPath("home");
+    for (const sock of [
+      "/var/run/docker.sock",
+      process.env.XDG_RUNTIME_DIR
+        ? path.join(process.env.XDG_RUNTIME_DIR, "docker.sock")
+        : null,
+      path.join(home, ".docker", "run", "docker.sock"), // rootless
+      path.join(home, ".docker", "desktop", "docker.sock"), // Docker Desktop for Linux
+    ]) {
+      if (sock) candidates.push({ socketPath: sock });
+    }
+  }
+  return candidates;
+}
+
+// Picks the first candidate that answers. Memoised: the daemon doesn't move
+// while the app is running, and probing spawns a CLI call.
+let resolvedDockerEndpoint;
+function resolveDockerEndpoint() {
+  if (resolvedDockerEndpoint !== undefined) return resolvedDockerEndpoint;
+  resolvedDockerEndpoint = null;
+  for (const candidate of dockerEndpointCandidates()) {
+    // A TCP endpoint can't be probed with existsSync, and may need TLS we
+    // don't handle - take it on faith and let the CLI fallback catch it.
+    if (!candidate.socketPath) {
+      resolvedDockerEndpoint = candidate;
+      break;
+    }
+    // A named pipe isn't a filesystem entry existsSync can see either.
+    if (process.platform === "win32" || fs.existsSync(candidate.socketPath)) {
+      resolvedDockerEndpoint = candidate;
+      break;
+    }
+  }
+  return resolvedDockerEndpoint;
 }
 
 // Pulls via the Docker Engine API (not the `docker` CLI) so we get real
@@ -378,6 +483,12 @@ function cancelDockerPull() {
 // own multi-line progress output is meant for terminal rendering, not
 // machine parsing, and doesn't expose stable byte totals.
 function pullDockerImageWithProgress(imageRef, stage) {
+  const endpoint = resolveDockerEndpoint();
+  // No endpoint we can speak HTTP to (an ssh:// context, a TLS-protected TCP
+  // daemon, or a socket in a layout none of the candidates cover). The CLI
+  // handles all of those itself, so hand the pull to it rather than failing on
+  // a machine where `docker pull` would have worked fine from a terminal.
+  if (!endpoint) return pullDockerImageViaCli(imageRef, stage);
   return new Promise((resolve, reject) => {
     const lastColon = imageRef.lastIndexOf(":");
     const hasTag = lastColon > imageRef.lastIndexOf("/");
@@ -388,7 +499,7 @@ function pullDockerImageWithProgress(imageRef, stage) {
 
     const req = http.request(
       {
-        socketPath: "/var/run/docker.sock",
+        ...endpoint,
         path: `/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
         method: "POST",
       },
@@ -477,6 +588,78 @@ function pullDockerImageWithProgress(imageRef, stage) {
   });
 }
 
+// Fallback pull for endpoints the Engine API path can't reach. Without a TTY
+// `docker pull` prints one status line per layer transition and no byte
+// counts, so progress here is the fraction of layers that have finished rather
+// than the real byte percentage the API path reports. Coarser, but it means a
+// pull is possible on every setup the CLI supports.
+function pullDockerImageViaCli(imageRef, stage) {
+  return new Promise((resolve, reject) => {
+    pullCancelRequested = false;
+    sendLog(
+      "info",
+      "Docker Engine API not reachable directly - pulling via the docker CLI " +
+        "(progress is per-layer instead of per-byte).",
+      stage,
+    );
+    const child = spawn("docker", ["pull", imageRef]);
+    activePullChild = child;
+
+    const layers = new Set();
+    const done = new Set();
+    let stderr = "";
+    let buf = "";
+
+    const emit = () => {
+      if (!layers.size) return;
+      const percent = Math.min(99, (done.size / layers.size) * 100);
+      lastPullPercent = percent;
+      sendProgress(
+        stage,
+        percent,
+        "running",
+        `Pulling image: ${done.size}/${layers.size} layers`,
+      );
+    };
+
+    child.stdout.on("data", (chunk) => {
+      buf += chunk.toString();
+      let idx;
+      // The CLI redraws with \r when attached to a TTY; split on both so a
+      // future TTY-attached run doesn't buffer the whole pull into one line.
+      while ((idx = buf.search(/[\r\n]/)) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        const m = /^([0-9a-f]{6,}):\s+(.+)$/.exec(line);
+        if (m) {
+          // Only ids that announce themselves as a layer count towards the
+          // total. The manifest and config blobs share the same id: status
+          // line shape but only ever reach "Download complete", so counting
+          // every id left a finished pull reporting 1/3 layers.
+          if (/^(Pulling fs layer|Already exists)/.test(m[2])) layers.add(m[1]);
+          if (/^(Pull complete|Already exists)/.test(m[2])) done.add(m[1]);
+          emit();
+        } else {
+          sendLog("info", line, "docker-pull");
+        }
+      }
+    });
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+
+    child.on("error", (e) => {
+      activePullChild = null;
+      reject(pullCancelRequested ? cancelledError() : e);
+    });
+    child.on("close", (code) => {
+      activePullChild = null;
+      if (pullCancelRequested) return reject(cancelledError());
+      if (code === 0) return resolve();
+      reject(new Error(stderr.trim() || `docker pull exited with ${code}`));
+    });
+  });
+}
+
 function cancelledError() {
   const e = new Error("Cancelled by user.");
   e.cancelled = true;
@@ -501,14 +684,197 @@ function downloadFileWithProgress(url, destPath, stage, label) {
 const DOCKER_NOT_READY_MSG =
   'The Docker image isn\'t built yet. Open Settings and click "Build Docker image" (or use the install prompt on launch).';
 
+// Conditions on this host that make every container command fail, checked up
+// front so the failure names its own cause instead of surfacing as a confusing
+// error several steps later. Both are about the one assumption the whole
+// container setup rests on: that ROOT can be bind-mounted at its own path.
+// Deliberately not a platform blocklist. An earlier version refused to run on
+// Windows, on the grounds that a "C:\..." path can't be a container path -
+// true of the mount scheme here, but not a fact about Windows: a host can
+// mount ROOT at a fixed container path and translate instead, which is what
+// the add-windows-support work does. Whether the mount works is a capability,
+// so ensureMountWorks() answers it by trying, and this list is left to the one
+// thing no setup can work around.
+function platformBlockers() {
+  const blockers = [];
+  // `docker run -v a:b` splits its argument on colons, so a colon anywhere in
+  // the project path makes the mount unparseable. Verified: a directory named
+  // "odd:name" makes docker reject the run outright, while spaces are fine
+  // (runProcess spawns without a shell).
+  if (ROOT.includes(":"))
+    blockers.push(
+      `The project path contains a colon (${ROOT}). Docker reads "-v src:dst" ` +
+        `by splitting on colons, so this path can't be mounted. Move or rename ` +
+        `the project so its path has no ":" in it.`,
+    );
+  return blockers;
+}
+
 function requireDocker() {
+  const blockers = platformBlockers();
+  if (blockers.length) throw new Error(blockers[0]);
   const settings = getSettings();
   if (settings.installMode !== "docker") throw new Error(DOCKER_NOT_READY_MSG);
   return settings;
 }
 
-function runCondaPython(envName, scriptPath, args, opts = {}) {
+// Proves the bind mount actually round-trips, once per app launch. A mount can
+// be accepted by `docker run` and still not be shared with the host - Docker
+// Desktop's File Sharing on macOS/Windows is the usual reason - in which case
+// every tool "succeeds" while writing into the container's own filesystem,
+// which --rm then discards. readRunOutput() catches that after the fact; this
+// catches it before a multi-minute pipeline runs.
+let mountVerified = false;
+async function ensureMountWorks(source) {
+  if (mountVerified) return;
+  const settings = getSettings();
+  if (settings.installMode !== "docker") return;
+  const token = `mount-check-${Date.now()}`;
+  const hostFile = path.join(DIRS.work, `${token}.host`);
+  const containerFile = path.join(DIRS.work, `${token}.container`);
+  fs.writeFileSync(hostFile, token, "utf8");
+  try {
+    // One container proves both directions: it must see what the host wrote,
+    // and the host must then see what it wrote back.
+    const { stdout } = await runProcess(
+      "docker",
+      [
+        "run",
+        "--rm",
+        ...(HOST_IDS ? ["--user", HOST_IDS] : []),
+        "-v",
+        `${ROOT}:${ROOT}`,
+        settings.dockerImage,
+        "bash",
+        "-c",
+        `cat '${hostFile}' && cp '${hostFile}' '${containerFile}'`,
+      ],
+      { source },
+    );
+    if (stdout.trim() !== token)
+      throw new Error("the container could not read a file the host wrote");
+    if (!fs.existsSync(containerFile))
+      throw new Error("the host cannot see a file the container wrote");
+    mountVerified = true;
+  } catch (e) {
+    // A pending Stop makes runProcess refuse to spawn; that's the user's own
+    // doing, not a broken mount, so let it through untouched.
+    if (e.cancelled) throw e;
+    // Deliberately "could not verify" rather than "is not shared": this catch
+    // also sees plain container failures, and blaming the mount for those
+    // would send the user to the wrong setting. The underlying error comes
+    // first so the real cause is visible either way.
+    throw new Error(
+      `Could not verify that the project directory works inside a container: ` +
+        `${e.message}. ${ROOT} is bind-mounted into every container, so ` +
+        `nothing can run until that works. If the cause is the mount itself, ` +
+        `on macOS/Windows add this directory under Docker Desktop -> ` +
+        `Settings -> Resources -> File Sharing.`,
+    );
+  } finally {
+    for (const f of [hostFile, containerFile]) {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        // Already gone, or never created because the mount failed.
+      }
+    }
+  }
+}
+
+// Containers run as root unless told otherwise, so every file they create
+// under the ROOT mount (the FASTA in output/, RFdiffusion backbones in work/)
+// ends up owned by root on the host - the user can't overwrite or delete their
+// own results without sudo. On Linux we pass the host's own uid:gid so writes
+// land with the right owner from the start. Docker Desktop on macOS/Windows
+// already maps ownership through its VM's file sharing and has no getuid(),
+// so this stays null there and nothing changes.
+const HOST_IDS =
+  process.platform === "linux" && typeof process.getuid === "function"
+    ? `${process.getuid()}:${process.getgid()}`
+    : null;
+
+// Extra env for a --user run. The image's /etc/passwd has no entry for the
+// host uid, which breaks anything calling getpass.getuser() - torch's inductor
+// does, at import time, so DiscoTope died with
+// "KeyError: getpwuid(): uid not found" before this. getpass checks LOGNAME
+// and USER before falling back to pwd, so naming the user here is enough; no
+// image rebuild or /etc/passwd mount needed. HOME must also move off /root
+// (mode 700, unreadable to this uid) to a writable mounted dir, for tools that
+// write to ~ without honouring HF_HOME/TORCH_HOME.
+function userEnvFlags() {
+  if (!HOST_IDS) return [];
+  return [
+    "-e",
+    `HOME=${DIRS.cacheHome}`,
+    "-e",
+    "USER=nanobody",
+    "-e",
+    "LOGNAME=nanobody",
+  ];
+}
+
+// Hands a path tree back to the host user. Needed for the RFantibody path,
+// which can't use --user: uv lives in /root/.local/bin and /root is mode 700,
+// so a non-root uid can't even execute it ("uv: command not found"). Those
+// runs stay root and give ownership back afterwards instead. chown itself
+// needs root, hence its own throwaway container.
+// Never throws: it runs in a finally block, so a failure here must not mask
+// the real error from the run it follows.
+function reclaimOwnership(paths, source) {
+  return new Promise((resolve) => {
+    const settings = getSettings();
+    if (!HOST_IDS || !paths.length || settings.installMode !== "docker")
+      return resolve();
+    const child = spawn("docker", [
+      "run",
+      "--rm",
+      "-v",
+      `${ROOT}:${ROOT}`,
+      settings.dockerImage,
+      "chown",
+      "-R",
+      HOST_IDS,
+      ...paths,
+    ]);
+    let stderr = "";
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.on("error", (e) => {
+      sendLog("warn", `Could not reclaim file ownership: ${e.message}`, source);
+      resolve();
+    });
+    child.on("close", (code) => {
+      if (code !== 0)
+        sendLog(
+          "warn",
+          `Could not reclaim file ownership (exit ${code}): ${stderr.trim()}`,
+          source,
+        );
+      resolve();
+    });
+  });
+}
+
+// One-time cleanup for installs that predate the --user change: cache/ and
+// work/ can still hold root-owned files and directories from earlier runs, and
+// a root-owned directory blocks the now-non-root container from writing into
+// it (e.g. cache/torch, where DiscoTope's ESM-IF1 weights land). Runs once per
+// install, not per command.
+async function ensureOwnershipReclaimed(source) {
+  if (!HOST_IDS) return;
+  const settings = getSettings();
+  if (settings.installMode !== "docker" || settings.ownershipReclaimed) return;
+  await reclaimOwnership(
+    [path.join(ROOT, "cache"), DIRS.work, DIRS.output],
+    source,
+  );
+  saveSettingsToDisk({ ownershipReclaimed: true });
+}
+
+async function runCondaPython(envName, scriptPath, args, opts = {}) {
   const settings = requireDocker();
+  await ensureOwnershipReclaimed(opts.source || envName);
+  await ensureMountWorks(opts.source || envName);
   // opts.forceGpu bypasses the GPU_AVAILABLE gate for the pre-flight GPU
   // check itself (see detectGpu()) - that call's whole job is to *determine*
   // GPU_AVAILABLE, so gating it on GPU_AVAILABLE (still false at that point)
@@ -552,8 +918,10 @@ function runCondaPython(envName, scriptPath, args, opts = {}) {
       "--rm",
       "--name",
       containerName,
+      ...(HOST_IDS ? ["--user", HOST_IDS] : []),
       ...gpuFlags,
       ...envFlags,
+      ...userEnvFlags(),
       "-v",
       `${ROOT}:${ROOT}`,
       "-w",
@@ -574,8 +942,10 @@ function runCondaPython(envName, scriptPath, args, opts = {}) {
 
 // Runs a shell command line inside the RFantibody checkout baked into the
 // Docker image (uv-managed venv, e.g. `uv run rfdiffusion ...`).
-function runRfantibodyCommand(commandLine, source, extraMounts = []) {
+async function runRfantibodyCommand(commandLine, source, extraMounts = []) {
   const settings = requireDocker();
+  await ensureOwnershipReclaimed(source);
+  await ensureMountWorks(source);
   const rfantibodyDir = DOCKER_TOOL_PATHS.rfantibodyDir;
   const gpuFlags = GPU_AVAILABLE ? ["--gpus", "all"] : [];
   const mountFlags = extraMounts.flatMap((m) => ["-v", m]);
@@ -583,26 +953,34 @@ function runRfantibodyCommand(commandLine, source, extraMounts = []) {
   // ROOT is mounted so output paths under DIRS.work (which live under ROOT,
   // not rfantibodyDir) are visible inside the container too.
   const containerName = newContainerName(source);
-  return runProcess(
-    "docker",
-    [
-      "run",
-      "--rm",
-      "--name",
-      containerName,
-      ...gpuFlags,
-      "-v",
-      `${ROOT}:${ROOT}`,
-      ...mountFlags,
-      "-w",
-      rfantibodyDir,
-      settings.dockerImage,
-      "bash",
-      "-lc",
-      full,
-    ],
-    { source },
-  ).finally(() => activeContainers.delete(containerName));
+  try {
+    return await runProcess(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--name",
+        containerName,
+        ...gpuFlags,
+        "-v",
+        `${ROOT}:${ROOT}`,
+        ...mountFlags,
+        "-w",
+        rfantibodyDir,
+        settings.dockerImage,
+        "bash",
+        "-lc",
+        full,
+      ],
+      { source },
+    );
+  } finally {
+    activeContainers.delete(containerName);
+    // Every output of this stage lands under work/ (each caller makes its own
+    // subdir there), so that one tree is all that needs handing back. Also runs
+    // after a failure or a cancel, which leave partial root-owned files behind.
+    await reclaimOwnership([DIRS.work], source);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +1092,26 @@ function readCacheJson(file) {
   } catch {
     return null;
   }
+}
+
+// Reads the JSON a container run was asked to produce. Unlike readCacheJson,
+// a missing or unparseable file is a hard failure here, not a cache miss:
+// every caller is reading a file the run it just awaited was supposed to have
+// written. Returning null instead let a failed run look like a successful one
+// - the plasmid handler then reported 'FASTA saved: ' with an empty name and
+// handed null to the renderer, which died on result.preview with a TypeError
+// far from the actual cause. The most likely cause is a bind mount that isn't
+// really shared, so name that possibility rather than just the missing file.
+function readRunOutput(file, what) {
+  const data = readCacheJson(file);
+  if (data === null)
+    throw new Error(
+      `${what} produced no readable output at ${file}. The container reported ` +
+        `success, so the most likely cause is that the host can't see what it ` +
+        `wrote - i.e. the ${ROOT} bind mount isn't actually shared with Docker ` +
+        `(on macOS/Windows, check Docker Desktop's File Sharing settings).`,
+    );
+  return data;
 }
 
 function writeCacheJson(file, data) {
@@ -894,12 +1292,12 @@ ipcMain.handle("run-freesasa", async (_evt, { chainAPath }) => {
       [chainAPath, outJson],
       { source: "freesasa" },
     );
-    const result = readCacheJson(outJson);
+    const result = readRunOutput(outJson, "FreeSASA");
     sendProgress(
       "freesasa",
       100,
       "done",
-      `${result?.residues?.length || 0} residues analyzed`,
+      `${result.residues?.length || 0} residues analyzed`,
     );
     return result;
   } catch (e) {
@@ -1168,7 +1566,7 @@ ipcMain.handle("score-candidates", async (_evt, params) => {
     { source: "scoring" },
   );
 
-  const result = readCacheJson(outJson) || { candidates: [] };
+  const result = readRunOutput(outJson, "Candidate scoring");
   sendProgress(
     "scoring",
     100,
@@ -1250,8 +1648,8 @@ ipcMain.handle("codon-optimize", async (_evt, { aminoAcidSeq, organism }) => {
     ],
     { source: "codon-optimize" },
   );
-  const result = readCacheJson(outJson);
-  sendProgress("codon-optimize", 100, "done", `Method: ${result?.method}`);
+  const result = readRunOutput(outJson, "Codon optimization");
+  sendProgress("codon-optimize", 100, "done", `Method: ${result.method}`);
   return result;
 });
 
@@ -1263,7 +1661,7 @@ ipcMain.handle("calculate-cai", async (_evt, { dnaSeq }) => {
     ["--dna", dnaSeq, "--out", outJson],
     { source: "cai" },
   );
-  return readCacheJson(outJson);
+  return readRunOutput(outJson, "CAI calculation");
 });
 
 // ---------------------------------------------------------------------------
@@ -1513,7 +1911,7 @@ ipcMain.handle("build-anchor-construct", async (_evt, params) => {
     { source: "anchor-construct" },
   );
 
-  const result = readCacheJson(outJson);
+  const result = readRunOutput(outJson, "Anchor construct build");
   sendProgress("anchor-construct", 100, "done", "Construct built");
   return result;
 });
@@ -1540,21 +1938,40 @@ ipcMain.handle("build-plasmid", async (_evt, params) => {
   });
   const outJson = path.join(DIRS.work, `plasmid_out_${Date.now()}.json`);
 
-  await runCondaPython(
-    TOOLS_ENV,
-    path.join(DIRS.python, "build_plasmid.py"),
-    ["--args_json", argsJson, "--out", outJson],
-    { source: "plasmid" },
-  );
+  // Anything below can throw now that a missing output is a hard failure, so
+  // the progress bar has to be moved out of "running" on the way out - matching
+  // the freesasa/discotope handlers. Without this it sits at 20% forever while
+  // the only sign of trouble is a line in the Live Console.
+  try {
+    await runCondaPython(
+      TOOLS_ENV,
+      path.join(DIRS.python, "build_plasmid.py"),
+      ["--args_json", argsJson, "--out", outJson],
+      { source: "plasmid" },
+    );
 
-  const result = readCacheJson(outJson);
-  sendProgress(
-    "plasmid",
-    100,
-    "done",
-    `FASTA saved: ${result?.fastaPath ? path.basename(result.fastaPath) : ""}`,
-  );
-  return result;
+    const result = readRunOutput(outJson, "Plasmid build");
+    // The path came back from a process inside the container. It's the same
+    // string on the host because ROOT is mounted at its own path - but only if
+    // the mount really is shared. Otherwise the write landed in the container's
+    // own filesystem, --rm has already discarded it, and the log still shows a
+    // plausible-looking path. Check the host side before reporting done.
+    if (!result.fastaPath || !fs.existsSync(result.fastaPath))
+      throw new Error(
+        `Plasmid build reported writing ${result.fastaPath || "a FASTA"}, but ` +
+          `that file doesn't exist on the host. The ${ROOT} bind mount isn't ` +
+          `actually shared with Docker, so the file was written inside the ` +
+          `container and discarded (on macOS/Windows, check Docker Desktop's ` +
+          `File Sharing settings).`,
+      );
+    // Full path, not just the basename: this is the one message that tells the
+    // user where their synthesis-ready FASTA actually is.
+    sendProgress("plasmid", 100, "done", `FASTA saved: ${result.fastaPath}`);
+    return result;
+  } catch (e) {
+    sendProgress("plasmid", 100, "error", e.message);
+    throw e;
+  }
 });
 
 ipcMain.handle("open-output-folder", async () => {
@@ -1626,6 +2043,20 @@ ipcMain.handle("check-gpu", async () => {
 // ---------------------------------------------------------------------------
 // IPC: Installation (Docker build)
 // ---------------------------------------------------------------------------
+// `reason` separates the three cases the banner used to collapse into "Docker
+// wasn't detected": the CLI is genuinely missing, the CLI exists but the
+// daemon isn't running, or both exist but this user can't reach the socket.
+// The last one is the common first-install mistake on Linux (added to the
+// docker group without logging out again) and has a one-line fix, so telling
+// the user to go install Docker was actively misleading.
+function classifyDockerFailure(res) {
+  if (res.error && res.error.code === "ENOENT") return "not-installed";
+  const out = `${res.stderr || ""}${res.stdout || ""}`.toLowerCase();
+  if (out.includes("permission denied")) return "permission";
+  if (out.includes("cannot connect to the docker daemon")) return "not-running";
+  return "unknown";
+}
+
 ipcMain.handle("check-docker", async () => {
   try {
     const res = spawnSync(
@@ -1634,10 +2065,25 @@ ipcMain.handle("check-docker", async () => {
       { encoding: "utf8", timeout: 5000 },
     );
     if (res.error || res.status !== 0)
-      return { available: false, version: null };
-    return { available: true, version: res.stdout.trim() };
-  } catch {
-    return { available: false, version: null };
+      return {
+        available: false,
+        version: null,
+        reason: classifyDockerFailure(res),
+        detail: (res.stderr || "").trim().split("\n")[0] || null,
+      };
+    return {
+      available: true,
+      version: res.stdout.trim(),
+      reason: null,
+      blockers: platformBlockers(),
+    };
+  } catch (e) {
+    return {
+      available: false,
+      version: null,
+      reason: "unknown",
+      detail: e.message,
+    };
   }
 });
 
@@ -1668,6 +2114,10 @@ ipcMain.handle("test-gpu-docker", async () => {
 // Dockerfile's note on why); ensureRf2Weights() fetches that separately on
 // first use of the Design pipeline.
 ipcMain.handle("pull-docker-image", async () => {
+  // Checked before the pull, not after: downloading 19 GB onto a host where
+  // the mount scheme can't work is the most expensive way to find out.
+  const blockers = platformBlockers();
+  if (blockers.length) throw new Error(blockers[0]);
   const settings = getSettings();
   sendProgress("install", 0, "running", "Pulling Docker image...");
   try {
