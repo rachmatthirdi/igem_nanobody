@@ -292,9 +292,20 @@ function resetPipelineCancel() {
   pipelineCancelRequested = false;
 }
 
-// Windows hosts: "D:\proj" isn't a valid container path, so ROOT is mounted at
-// /nbroot and every ROOT-prefixed argument (and any /nbroot in the output) is
-// translated. Other platforms mount ROOT at itself and need no translation.
+// ROOT is mounted at one fixed container path on every host, and every
+// ROOT-prefixed argument is translated to it (and back again on the way out).
+//
+// Windows forced this: "D:\proj" is not a valid path inside a Linux
+// container. But applying it only there left the project with two mount
+// schemes, of which the Windows one could only ever be exercised by someone
+// holding a Windows machine - the worst kind of code to own in a small team.
+// One scheme everywhere is testable on any laptop, and it makes what the
+// container writes independent of which machine wrote it, since the paths in
+// it no longer name anyone's home directory.
+//
+// The cost is that container output speaks /nbroot, not paths the user can
+// open. fromContainerText() pays it back on the way out, so the Live Console
+// and everything read from disk still show real host paths.
 const CROOT = "/nbroot";
 const ROOT_FWD = ROOT.split("\\").join("/");
 function toContainerArg(a) {
@@ -309,9 +320,14 @@ function fromContainerText(t) {
 }
 
 function runProcess(cmd, args, { cwd, source, env } = {}) {
-  if (process.platform === "win32" && cmd === "docker" && args[0] === "run") {
-    // The host side of a "-v host:container" mount must stay a real Windows path.
-    args = args.map((a, i) => (args[i - 1] === "-v" && a !== `${ROOT}:${ROOT}` ? a : toContainerArg(a)));
+  if (cmd === "docker" && args[0] === "run") {
+    // The host side of a "-v host:container" mount must stay a host path, so
+    // the value after a -v is left alone - except ROOT:ROOT, which
+    // toContainerArg rewrites to ROOT:CROOT (host side intact, container side
+    // moved). Extra mounts already name their own container path.
+    args = args.map((a, i) =>
+      args[i - 1] === "-v" && a !== `${ROOT}:${ROOT}` ? a : toContainerArg(a),
+    );
   }
   return new Promise((resolve, reject) => {
     // Honour a cancel that arrived before this stage got as far as spawning.
@@ -707,7 +723,7 @@ const DOCKER_NOT_READY_MSG =
 // Conditions on this host that make every container command fail, checked up
 // front so the failure names its own cause instead of surfacing as a confusing
 // error several steps later. Both are about the one assumption the whole
-// container setup rests on: that ROOT can be bind-mounted at its own path.
+// container setup rests on: that ROOT can be bind-mounted into a container.
 // Deliberately not a platform blocklist. An earlier version refused to run on
 // Windows, on the grounds that a "C:\..." path can't be a container path -
 // true of the mount scheme here, but not a fact about Windows: a host can
@@ -844,6 +860,11 @@ function userEnvFlags() {
 function reclaimOwnership(paths, source) {
   return new Promise((resolve) => {
     const settings = getSettings();
+    // HOST_IDS is Linux-only, and so is this: Docker Desktop's file sharing on
+    // macOS and Windows already presents everything the container writes as
+    // owned by the user, so there is nothing to hand back there. The paths
+    // above are translated on every host regardless, so this follows whatever
+    // mount scheme is in effect rather than assuming one.
     if (!HOST_IDS || !paths.length || settings.installMode !== "docker")
       return resolve();
     const child = spawn("docker", [
@@ -855,7 +876,10 @@ function reclaimOwnership(paths, source) {
       "chown",
       "-R",
       HOST_IDS,
-      ...paths,
+      // Spawned directly rather than through runProcess, so nothing translates
+      // these for us - and they are read inside the container, where ROOT does
+      // not exist. Convert them here or chown is handed paths that aren't there.
+      ...paths.map(toContainerArg),
     ]);
     let stderr = "";
     child.stderr.on("data", (c) => (stderr += c.toString()));
@@ -927,9 +951,9 @@ async function runCondaPython(envName, scriptPath, args, opts = {}) {
     "-e",
     `TORCH_HOME=${DIRS.cacheTorch}`,
   ];
-  // Mount ROOT at the same absolute path inside the container so every
-  // caller's host-absolute paths (under ROOT/work, ROOT/cache, ROOT/python)
-  // resolve unchanged - no path translation needed.
+  // ROOT is mounted at CROOT and every ROOT-prefixed argument below is
+  // rewritten to match by runProcess (see toContainerArg), so callers keep
+  // passing plain host paths and never deal with the container's view.
   const containerName = newContainerName(opts.source || envName);
   return runProcess(
     "docker",
@@ -1129,8 +1153,9 @@ function readRunOutput(file, what) {
     throw new Error(
       `${what} produced no readable output at ${file}. The container reported ` +
         `success, so the most likely cause is that the host can't see what it ` +
-        `wrote - i.e. the ${ROOT} bind mount isn't actually shared with Docker ` +
-        `(on macOS/Windows, check Docker Desktop's File Sharing settings).`,
+        `wrote - i.e. ${ROOT} is bind-mounted but not really shared with ` +
+        `Docker (on macOS/Windows, check Docker Desktop's File Sharing ` +
+        `settings).`,
     );
   return data;
 }
@@ -1957,9 +1982,9 @@ ipcMain.handle("build-plasmid", async (_evt, params) => {
   writeCacheJson(argsJson, {
     ...params,
     pelbAminoAcidSeq,
-    // Read inside the container, so it must be a container path on Windows.
-    output_dir:
-      process.platform === "win32" ? toContainerArg(DIRS.output) : DIRS.output,
+    // This one travels inside a JSON file rather than as an argv entry, so
+    // runProcess's translation never sees it - it has to be converted here.
+    output_dir: toContainerArg(DIRS.output),
   });
   const outJson = path.join(DIRS.work, `plasmid_out_${Date.now()}.json`);
 
@@ -1976,18 +2001,19 @@ ipcMain.handle("build-plasmid", async (_evt, params) => {
     );
 
     const result = readRunOutput(outJson, "Plasmid build");
-    // The path came back from a process inside the container. It's the same
-    // string on the host because ROOT is mounted at its own path - but only if
-    // the mount really is shared. Otherwise the write landed in the container's
-    // own filesystem, --rm has already discarded it, and the log still shows a
-    // plausible-looking path. Check the host side before reporting done.
+    // fastaPath was produced inside the container, so it named CROOT until
+    // readRunOutput mapped it back to a host path. That mapping is a string
+    // rewrite - it says nothing about whether the file exists here. If the
+    // mount is accepted but not actually shared, the write landed in the
+    // container's own filesystem, --rm has discarded it, and the path still
+    // looks plausible. Check the host side before reporting done.
     if (!result.fastaPath || !fs.existsSync(result.fastaPath))
       throw new Error(
         `Plasmid build reported writing ${result.fastaPath || "a FASTA"}, but ` +
-          `that file doesn't exist on the host. The ${ROOT} bind mount isn't ` +
-          `actually shared with Docker, so the file was written inside the ` +
-          `container and discarded (on macOS/Windows, check Docker Desktop's ` +
-          `File Sharing settings).`,
+          `that file doesn't exist on the host. ${ROOT} is bind-mounted into ` +
+          `the container but isn't really shared, so the file was written ` +
+          `inside the container and discarded (on macOS/Windows, check Docker ` +
+          `Desktop's File Sharing settings).`,
       );
     // Full path, not just the basename: this is the one message that tells the
     // user where their synthesis-ready FASTA actually is.

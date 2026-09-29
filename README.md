@@ -44,12 +44,13 @@ Design pipeline is already in the image.
   macOS/Windows, Docker Engine on Linux) with the daemon running. See
   [Docker setup per OS](#docker-setup-per-os) — the pull itself is identical
   everywhere, but what it takes to have a reachable daemon is not.
-- **A supported host** — Linux, WSL2 and macOS are the paths documented here.
-  Windows support is being added separately (see `docs/PLATFORM_NOTES.md` on
-  the `afif/add-windows-support` branch); on this branch a Windows host has no
-  path translation, so the mount check below reports the failure instead of
-  the app breaking further in. Whichever host you use, the project path must
-  not contain a `:` — `docker run -v src:dst` splits on colons.
+- **A supported host** — Linux, WSL2, macOS and Windows. The project
+  directory is mounted at one fixed path inside the container (`/nbroot`) on
+  every host, and paths are translated in and out, so the app follows
+  whatever path your project happens to live at — `/home/you/igem`,
+  `D:\work\igem`, anything. The one restriction is that the path must not
+  contain a `:`, since `docker run -v src:dst` splits on colons; the app
+  checks this at startup and says so.
 - **A working bind mount** — the app verifies once per launch that the project
   directory really round-trips into a container, since a mount that is
   accepted but not shared makes every tool "succeed" while writing into the
@@ -66,7 +67,9 @@ Design pipeline is already in the image.
   but RFdiffusion/RF2 specifically go from **seconds** on a GPU to
   **minutes** on CPU. The app only passes `--gpus all` to Docker when it
   detects a GPU, so CPU-only machines need no extra setup. Docker Desktop
-  on macOS/Windows has no NVIDIA passthrough, so RFdiffusion/RF2 run
+  on Windows *does* pass an NVIDIA GPU through (WSL2 backend) — measured at
+  ~94% GPU utilisation during RFdiffusion on a Windows 11 test machine.
+  macOS has no NVIDIA passthrough, so RFdiffusion/RF2 run
   CPU-only there.
 
 You do **not** need Python or conda installed on your system directly —
@@ -164,9 +167,9 @@ through automatically. Do not install a Linux driver inside the distro.
 shared and tools write into the container instead of onto your disk. No
 NVIDIA passthrough exists, so everything runs on CPU.
 
-**Windows (native)** — not covered by the steps on this branch; use WSL2 for
-now. Windows support (mounting the project at a fixed container path and
-translating paths) is in progress separately.
+**Windows (native)** — Docker Desktop with the WSL2 backend, and share the
+drive holding the project under Settings → Resources → File Sharing. GPU
+passthrough works. See `docs/PLATFORM_NOTES.md` for what has been tested.
 
 ### Building from source instead
 
