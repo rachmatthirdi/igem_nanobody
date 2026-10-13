@@ -37,48 +37,25 @@
         </div>
       </header>
 
-      <div id="body-layout">
-        <!-- ==================== SIDEBAR: SYSTEM MONITOR ==================== -->
-        <aside id="sidebar">
-          <h3>System Monitor</h3>
-          <div class="monitor-row">
-            <span class="monitor-label">GPU</span>
-            <span id="mon-gpu" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">VRAM</span>
-            <span id="mon-vram" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">Detected OS</span>
-            <span id="mon-detected-os" class="monitor-value">-</span>
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">Docker image</span>
-            <span
-              id="mon-docker-image"
-              class="monitor-value monitor-value-truncate"
-              >-</span
-            >
-          </div>
-          <div class="monitor-row">
-            <span class="monitor-label">Docker storage</span>
-            <span
-              id="mon-docker-storage"
-              class="monitor-value monitor-value-truncate"
-              >-</span
-            >
-          </div>
-          <hr />
-          <h3>Pipeline Flow</h3>
-          <ol class="pipeline-steps">
-            <li data-step="target">1. Target</li>
-            <li data-step="design">2. Design</li>
-            <li data-step="screening">3. Screening</li>
-            <li data-step="construct">4. Construct</li>
-          </ol>
-        </aside>
+      <!-- ==================== PIPELINE NAV (horizontal stepper) ==================== -->
+      <nav id="pipeline-nav" class="pipeline-nav" aria-label="Pipeline stages">
+        <ol class="pipeline-steps">
+          <li data-step="target" class="active">
+            <button type="button" class="step-btn" aria-current="step">1. Target</button>
+          </li>
+          <li data-step="design">
+            <button type="button" class="step-btn">2. Design</button>
+          </li>
+          <li data-step="screening">
+            <button type="button" class="step-btn">3. Screening</button>
+          </li>
+          <li data-step="construct">
+            <button type="button" class="step-btn">4. Construct</button>
+          </li>
+        </ol>
+      </nav>
 
+      <div id="body-layout">
         <!-- ==================== MAIN CONTENT ==================== -->
         <main id="main-content">
           <nav id="tabs">
@@ -156,7 +133,7 @@
                     id="pdb-id-input"
                     type="text"
                     maxlength="4"
-                    placeholder="e.g. 5M13"
+                    placeholder="e.g. 1ZVH"
                   />
                   <button id="btn-analyze" class="btn btn-primary">
                     Analyze
@@ -164,9 +141,6 @@
                 </div>
                 <div class="quick-examples">
                   <span>Quick examples:</span>
-                  <button class="chip example-chip" data-pdb="5M13">
-                    5M13
-                  </button>
                   <button class="chip example-chip" data-pdb="4KRN">
                     4KRN
                   </button>
@@ -872,7 +846,7 @@
       </div>
 
       <!-- ==================== LIVE CONSOLE FOOTER ==================== -->
-      <footer id="console-footer" class="collapsed">
+      <footer id="console-footer">
         <div id="console-header">
           <span>🖥 Live Console</span>
           <div class="console-header-actions">
@@ -902,48 +876,81 @@
       <div id="settings-modal" class="modal hidden">
         <div class="modal-content">
           <h2>⚙️ Settings</h2>
-          <div class="form-row">
-            <label>Docker image</label
-            ><input type="text" id="set-dockerImage" />
-          </div>
-          <div class="form-row">
-            <label>GPU detection</label>
-            <select id="set-gpuOverride">
-              <option value="auto">Auto-detect (recommended)</option>
-              <option value="on">Force GPU on</option>
-              <option value="off">Force CPU (disable GPU)</option>
-            </select>
-          </div>
-          <div class="section-hint">
-            If auto-detection gets it wrong (e.g. drivers are installed but not
-            picked up), override it here rather than editing files. This setting
-            only skips our detection - it can't make Docker reach a GPU that
-            isn't actually passed through. Verify that separately:
-          </div>
-          <div class="form-row">
-            <label>Verify GPU access</label>
-            <button id="btn-test-gpu" class="btn btn-secondary">
-              Test GPU access
-            </button>
-            <span id="gpu-test-status" style="margin-left: 8px"></span>
-          </div>
-          <div class="form-row">
-            <label>Docker tools image</label>
-            <button id="btn-build-docker" class="btn btn-secondary">
-              Download tools image
-            </button>
-            <span id="docker-build-status" style="margin-left: 8px"></span>
-          </div>
-          <div class="section-hint">
-            Downloads the pre-built image from Docker Hub (fast, no compiling -
-            recommended for almost everyone). Modified
-            <code>docker/Dockerfile</code> yourself, or would rather build from
-            source?
-            <button type="button" id="btn-build-docker-source" class="btn-link">
-              Build from source instead
-            </button>
-            (slower, ~20-30 min).
-          </div>
+
+          <section class="settings-section">
+            <h3>Compute configuration</h3>
+            <div class="form-row">
+              <label>Docker image</label
+              ><input type="text" id="set-dockerImage" />
+            </div>
+            <div class="form-row">
+              <label>GPU detection</label>
+              <select id="set-gpuOverride">
+                <option value="auto">Auto-detect (recommended)</option>
+                <option value="on">Force GPU on</option>
+                <option value="off">Force CPU (disable GPU)</option>
+              </select>
+            </div>
+            <div class="section-hint">
+              If auto-detection gets it wrong (e.g. drivers are installed but
+              not picked up), override it here rather than editing files. This
+              setting only skips our detection - it can't make Docker reach a
+              GPU that isn't actually passed through. Verify that separately:
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>Diagnostics</h3>
+            <div class="monitor-row">
+              <span class="monitor-label">GPU</span>
+              <span id="mon-gpu" class="monitor-value">-</span>
+            </div>
+            <div class="monitor-row">
+              <span class="monitor-label">VRAM</span>
+              <span id="mon-vram" class="monitor-value">-</span>
+            </div>
+            <div class="monitor-row">
+              <span class="monitor-label">Detected OS</span>
+              <span id="mon-detected-os" class="monitor-value">-</span>
+            </div>
+            <div class="form-row">
+              <label>Verify GPU access</label>
+              <button id="btn-test-gpu" class="btn btn-secondary">
+                Test GPU access
+              </button>
+              <span id="gpu-test-status"></span>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>Docker tools</h3>
+            <div class="monitor-row">
+              <span class="monitor-label">Docker storage</span>
+              <span id="mon-docker-storage" class="monitor-value">-</span>
+            </div>
+            <div class="form-row">
+              <label>Docker tools image</label>
+              <button id="btn-build-docker" class="btn btn-secondary">
+                Download tools image
+              </button>
+              <span id="docker-build-status"></span>
+            </div>
+            <div class="section-hint">
+              Downloads the pre-built image from Docker Hub (fast, no compiling
+              - recommended for almost everyone). Modified
+              <code>docker/Dockerfile</code> yourself, or would rather build
+              from source?
+              <button
+                type="button"
+                id="btn-build-docker-source"
+                class="btn-link"
+              >
+                Build from source instead
+              </button>
+              (slower, ~20-30 min).
+            </div>
+          </section>
+
           <div class="modal-actions">
             <button id="btn-settings-save" class="btn btn-primary">Save</button>
             <button id="btn-settings-close" class="btn btn-ghost">Close</button>
@@ -961,6 +968,72 @@
           </div>
         </div>
       </div>
+
+      <!-- ==================== WELCOME MODAL (first run) ==================== -->
+      <div id="welcome-modal" class="modal hidden">
+        <div
+          class="modal-content welcome-content"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="welcome-title"
+        >
+          <h2 id="welcome-title">🔬 Nanobody Designer</h2>
+          <p class="welcome-lead">
+            A guided workflow for designing nanobodies: pick a target protein,
+            generate and screen candidates, then export a ready-to-order
+            plasmid.
+          </p>
+          <p class="welcome-flow">Target → Design → Screening → Construct</p>
+          <div class="welcome-actions">
+            <button id="btn-welcome-new" class="btn btn-primary">
+              Create New
+            </button>
+            <button id="btn-welcome-load" class="btn btn-secondary">
+              Load Existing
+            </button>
+          </div>
+          <div class="welcome-more">
+            <button type="button" id="btn-welcome-tour" class="btn-link">
+              Take a quick tour
+            </button>
+            <button id="btn-welcome-skip" class="btn btn-ghost">
+              Skip for now
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== GUIDED TOUR OVERLAY ==================== -->
+      <div id="tour" class="tour hidden" aria-hidden="true">
+        <div class="tour-blocker"></div>
+        <div class="tour-spotlight"></div>
+        <div
+          id="tour-tip"
+          class="tour-tip"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tour-title"
+          aria-describedby="tour-text"
+        >
+          <button
+            type="button"
+            id="btn-tour-close"
+            class="tour-close"
+            aria-label="Close tour"
+          >
+            ×
+          </button>
+          <div id="tour-progress" class="tour-progress"></div>
+          <h3 id="tour-title" class="tour-title"></h3>
+          <p id="tour-text" class="tour-text"></p>
+          <div class="tour-actions">
+            <button id="btn-tour-skip" class="btn btn-ghost">Skip tour</button>
+            <span class="tour-spacer"></span>
+            <button id="btn-tour-back" class="btn btn-secondary">Back</button>
+            <button id="btn-tour-next" class="btn btn-primary">Next</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script defer src="js/state.js"></script>
@@ -975,5 +1048,6 @@
     <script defer src="js/tab-screening.js"></script>
     <script defer src="js/tab-construct.js"></script>
     <script defer src="js/app.js"></script>
+    <script defer src="js/onboarding.js"></script>
   </body>
 </html>

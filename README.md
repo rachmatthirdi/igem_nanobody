@@ -71,7 +71,7 @@ npm start
 ```
 
 `npm start` should open the app window. Try the **Target** tab first (e.g.
-the `5M13` quick example) — it needs nothing beyond what you just
+the `1ZVH` quick example) — it needs nothing beyond what you just
 installed.
 
 ## 2. Get the tools image
@@ -150,8 +150,10 @@ nothing to configure.
 
 ## 3. Verify it worked
 
-- **System Monitor** sidebar should show "Docker tools: ✓
-  rachmatthirdi/igem_brawijaya" once the download finishes.
+- The **Install External Tools** banner disappears once the download
+  finishes, and **Settings (⚙️) → Docker tools** shows where Docker stored
+  the image. **Settings → Diagnostics → Test GPU access** confirms GPU
+  passthrough.
 - **Target tab**: analyze a PDB ID (e.g. `1CRN`) — FreeSASA and
   DiscoTope-3.0 progress bars should complete instead of showing a
   warning.

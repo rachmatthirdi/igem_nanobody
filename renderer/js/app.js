@@ -13,7 +13,14 @@
       .forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
     document
       .querySelectorAll(".pipeline-steps li")
-      .forEach((li) => li.classList.toggle("active", li.dataset.step === name));
+      .forEach((li) => {
+        const active = li.dataset.step === name;
+        li.classList.toggle("active", active);
+        const btn = li.querySelector(".step-btn");
+        if (!btn) return;
+        if (active) btn.setAttribute("aria-current", "step");
+        else btn.removeAttribute("aria-current");
+      });
 
     if (name === "design" && window.TabDesign?.onActivate)
       window.TabDesign.onActivate();
@@ -26,6 +33,11 @@
   function wireTabs() {
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+    // The pipeline stepper is the visible navigation; the .tab-btn row above
+    // stays in the DOM (hidden by CSS) so both paths share switchTab().
+    document.querySelectorAll(".pipeline-steps li").forEach((li) => {
+      li.addEventListener("click", () => switchTab(li.dataset.step));
     });
   }
 
@@ -55,7 +67,7 @@
     }
   }
 
-  // ---------------- GPU badge + system monitor ----------------
+  // ---------------- GPU badge + GPU/OS status (shown in Settings) ----------------
   async function refreshGpuStatus() {
     try {
       const status = await window.api.checkGpu();
@@ -86,16 +98,14 @@
     refreshDockerStorageMonitor();
   }
 
-  // Shown in the sidebar regardless of install status (unlike the install
-  // banner, which hides itself once installMode === "docker") - this is the
-  // one place in the UI to always check where the ~19GB image actually
+  // Shown in Settings > Docker tools regardless of install status (unlike the
+  // install banner, which hides itself once installMode === "docker") - this
+  // is the one place in the UI to always check where the ~19GB image actually
   // lives, since that's Docker's own managed storage, not this app's folder.
+  // (The image name itself is the "Docker image" field in the same dialog.)
   async function refreshDockerStorageMonitor() {
     const info = await window.api.getDockerStorageInfo();
-    const imgEl = $("mon-docker-image");
     const storageEl = $("mon-docker-storage");
-    imgEl.textContent = info.dockerImage || "-";
-    imgEl.title = info.dockerImage || "";
     storageEl.textContent = info.dockerRootDir || "not detected";
     storageEl.title = info.dockerRootDir || "Docker not running or not found";
   }
