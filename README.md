@@ -22,6 +22,16 @@ one interface, with a live console that shows exactly what each tool is doing.
 - [Known issues](#known-issues)
 - [Appendix: install without Docker](#appendix-install-without-docker)
 
+#### Try It Online
+
+You can try CATCHERs Generator using our hosted deployment:
+
+**https://igem-brawijaya.ub.ac.id/**
+
+Alternatively, you can install and run the application locally.
+
+
+
 ## What each step does
 
 <!-- markdownlint-disable MD013 -->
