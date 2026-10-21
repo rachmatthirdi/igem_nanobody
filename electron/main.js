@@ -2452,6 +2452,13 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  // target="_blank" links and window.open() would otherwise spawn a second
+  // Electron window. Send web links to the user's browser instead, and never
+  // let the app open another window itself.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
   if (process.env.DEBUG_CONSOLE_FORWARD) {
     mainWindow.webContents.on(
       "console-message",

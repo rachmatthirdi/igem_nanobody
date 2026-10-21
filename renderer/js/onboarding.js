@@ -12,6 +12,9 @@
   const SEEN_KEY = "onboardingSeen"; // welcome dialog handled (any choice)
   const TOUR_KEY = "tourSeen"; // tour finished or skipped
 
+  const APP_NAME = "CATCHERs Generator";
+  const ONLINE_URL = "https://igem-brawijaya.ub.ac.id/";
+
   async function remember(key) {
     try {
       await window.api.saveSettings({ [key]: true });
@@ -256,7 +259,50 @@
     tourReturnFocus = null;
   }
 
+  // "Try it online" note in the welcome dialog: the hosted deployment URL plus
+  // a button that opens it in a new browser tab (Electron routes this to the
+  // OS browser via the window-open handler in main.js).
+  function addOnlineNote() {
+    const more = document.querySelector("#welcome-modal .welcome-more");
+    if (!more) return;
+
+    const title = document.createElement("h3");
+    title.textContent = "Try it online";
+
+    const link = document.createElement("a");
+    link.href = ONLINE_URL;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = ONLINE_URL;
+
+    const para = document.createElement("p");
+    para.append(
+      `You can try ${APP_NAME} using our hosted deployment: `,
+      link,
+      ". Alternatively, keep using this local installation.",
+    );
+
+    const text = document.createElement("div");
+    text.className = "welcome-online-text";
+    text.append(title, para);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "btn-welcome-online";
+    btn.className = "btn btn-secondary";
+    btn.textContent = "Try it with our resources";
+    btn.addEventListener("click", () => {
+      window.open(ONLINE_URL, "_blank", "noopener");
+    });
+
+    const box = document.createElement("div");
+    box.className = "welcome-online";
+    box.append(text, btn);
+    more.before(box);
+  }
+
   function wire() {
+    addOnlineNote();
     $("btn-welcome-new").addEventListener("click", createNew);
     $("btn-welcome-load").addEventListener("click", loadExisting);
     $("btn-welcome-tour").addEventListener("click", tourFromWelcome);
